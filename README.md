@@ -13,28 +13,32 @@ Built on the NanoClaw v2 platform with Claude (Anthropic Agent SDK).
 | Task | Description |
 |---|---|
 | **Pre-meeting briefing** | Surfaces everything known about a constituent and their case history before the MP walks in |
-| **Live case triage** | Given a one-line problem description, identifies the agency, the exact scheme, and the eligibility criteria — instantly |
+| **Live case triage** | Given a one-line problem description, identifies the agency, the exact scheme, and eligibility criteria — instantly |
 | **Appeal letter drafting** | Produces a formatted MP appeal letter ready for signature; correct tone, correct agency, correct policy citation |
-| **Policy lookup** | Answers questions about HDB, CPF, MOM, MOH, MSF, ICA, IRAS, LTA, MOE, PA schemes — with 2025/2026 Budget updates |
+| **Policy lookup** | Answers questions about HDB, CPF, MOM, MOH, MSF, ICA, IRAS, LTA, MOE, PA — with 2025/2026 Budget updates |
+| **Historical context** | Explains why policies exist — drawing on 70 years of Singapore policy history from 1955 to 2026 |
 | **Pending case digest** | Weekly summary of cases awaiting agency replies |
 | **Scheduled briefings** | Morning or pre-MPS summaries of pending matters and recent policy changes |
+| **Auto policy updates** | Monitors 8 agency newsrooms daily and ingests new announcements automatically |
 
 ---
 
 ## Agency coverage
 
-The agent has built-in knowledge of:
+Built-in knowledge of every agency encountered at MPS:
 
-- **HDB** — BTO grants, resale eligibility, rental flat appeals, HFE letter, income ceilings
-- **CPF** — OA/SA/MA/RA, MediSave claims, CPF LIFE, MRSS, 2026 OW ceiling update
-- **MOM** — EP/S Pass/WP/LTVP, salary disputes, TADM, retrenchment
-- **MOH** — MediShield Life, CHAS, MediFund, CareShield Life, Pioneer/Merdeka Generation Package
-- **MSF** — ComCare (Crisis / SMTA / PA), Silver Support, SSO referrals
-- **ICA** — PR appeals, citizenship, LTVP/LTVP+ extensions
-- **IRAS** — GST Voucher, S&CC and U-Save rebates, income tax disputes
-- **LTA** — Senior concessions, WAV subsidy, disabled parking
-- **MOE** — FAS, Edusave, school transfers, DSA
-- **PA / CDCs** — CDC Vouchers, grassroots referrals, community disputes
+| Agency | Coverage |
+|---|---|
+| **HDB** | BTO grants (EHG, PHG, Step-Up), resale eligibility, rental flat appeals, HFE letter, Fresh Start 2026 |
+| **CPF** | OA/SA/MA/RA, MediSave, CPF LIFE, MRSS, 2026 OW ceiling ($8,000), quarterly rate updates |
+| **MOM** | EP/S Pass/WP/LTVP/LOC, salary disputes, TADM, retrenchment, Workfare |
+| **MOH** | MediShield Life, CHAS (Blue/Orange), MediFund, CareShield Life, Pioneer/Merdeka Generation |
+| **MSF** | ComCare (Crisis/SMTA/PA), Silver Support, SSO referrals, ComLink+ |
+| **ICA** | PR appeals, citizenship, LTVP/LTVP+ extensions |
+| **IRAS** | GST Voucher cash/U-Save/S&CC, income tax disputes |
+| **LTA** | Senior concessions, WAV subsidy, disabled parking |
+| **MOE** | FAS, Edusave, school transfers, DSA, SPED |
+| **PA / CDCs** | CDC Vouchers 2026, grassroots referrals |
 
 ---
 
@@ -48,27 +52,92 @@ MPS-AI-Agent host process  (Node.js · src/index.ts)
   ├─ Router          → validates sender → writes to inbound.db
   ├─ Container runner → one isolated Docker container per channel group
   ├─ Delivery        → polls outbound.db → sends replies back to MP
-  ├─ Scheduler       → morning briefings, weekly digests, reminders
+  ├─ Scheduler       → morning briefings, weekly digests, auto-updates
   └─ OneCLI proxy    → intercepts all container API calls → injects credentials
         │
         ▼  (one container per active group)
 Docker container  (Bun runtime)
   ├─ Claude Agent SDK   → reasoning, triage, letter drafting
-  ├─ mnemon             → private case + policy knowledge graph (SQLite)
-  ├─ whisper.cpp        → on-device voice transcription (voice notes → text)
+  ├─ mnemon             → private case + policy knowledge graph (SQLite + FTS5)
+  ├─ whisper.cpp        → on-device voice transcription
   ├─ Ollama client      → local semantic search (nomic-embed-text)
-  └─ groups/main/       → bind-mounted; CLAUDE.md loaded every session
+  └─ groups/main/       → bind-mounted; all 4 knowledge files loaded every session
         │
         ▼
   inbound.db   ← host writes, container reads
   outbound.db  ← container writes, host reads
 ```
 
-**Key files:**
+---
 
-- `groups/main/CLAUDE.md` — agent identity, agency knowledge base, letter format, behavioural rules
-- `~/.config/nanoclaw/sender-allowlist.json` — controls who can trigger the agent (MP's number only)
-- `~/.config/nanoclaw/mount-allowlist.json` — controls what the container can access on disk
+## Knowledge base — groups/main/
+
+All four files live in `groups/main/` and are loaded into the agent's context at the start of every session.
+
+### `CLAUDE.md` — Agent identity and core knowledge
+
+Defines the agent's identity, roles, and all agency policy knowledge with 2025/2026 updates:
+
+- **5 primary roles:** pre-meeting briefing, live case triage, appeal letter drafting, policy lookup, weekly digests
+- **Agency knowledge base:** HDB, CPF, MOM, MOH, MSF, ICA, IRAS, LTA, MOE, PA — eligibility thresholds, scheme names, appeal processes
+- **MPS appeal letter format:** standard template used for all formal letters to agencies
+- **Behavioural rules:** accuracy-first, strict confidentiality, tone, escalation awareness
+- **Quick-reference routing table:** maps constituent complaints to the correct agency
+
+### `singapore-knowledge-ingestion.md` — Current policy URLs
+
+60+ URLs to feed into the knowledge graph, organised by priority:
+
+| Priority | Agency | URLs |
+|---|---|---|
+| 1 | HDB | Grants, eligibility, BTO/resale process, Fresh Start 2026 |
+| 2 | MSF / ComCare | Crisis/SMTA/PA, Silver Support, SSO locator, COS 2026 |
+| 3 | CPF | Accounts, CPF LIFE, MediSave, 2026 changes |
+| 4 | MOH | CHAS, MediShield Life, MediFund, CareShield Life |
+| 5 | MOM | EP/S Pass/WP/LTVP, TADM, retrenchment |
+| 6 | ICA | PR/citizenship appeals, LTVP/LTVP+ |
+| 7 | IRAS | GST Voucher, income tax |
+| 8 | MOE | FAS, Edusave, DSA, SPED |
+| 9 | LTA | Senior/disability concessions |
+| 10 | CDC/PA | CDC Vouchers 2026, grassroots |
+| + | Portals | Budget 2025, COS 2026, SupportGoWhere, LifeSG, OneService |
+
+Includes 6 post-ingest test queries and a weekly reminder schedule.
+
+### `singapore-historical-policies.md` — 70 years of policy history
+
+9-tier archive giving the agent historical depth so it can explain *why* policies exist, not just what they are:
+
+| Tier | Content |
+|---|---|
+| 1 | Foundational Acts of Parliament (HDA 1959, CPFA 1953, EA 1968, MSHA 2015, ICA 1959 …) |
+| 2 | Decade-by-decade milestones 1950s–2020s with context and ingest URLs |
+| 3 | Hansard / Pair Search queries for parliamentary debates on housing, CPF, ComCare, MediShield |
+| 4 | NLB digitised archives and Singapore Infopedia |
+| 5 | Wikipedia policy summaries (housing, CPF, healthcare, immigration, transport) |
+| 6 | Agency historical pages (HDB, CPF, MOH, MOM, MSF, PA) |
+| 7 | Full Budget archive 2005–2025 |
+| 8 | Committee of Supply debate archives |
+| 9 | Academic research papers (ADB, SMU, UNRISD, NUS) |
+
+Includes a 6-question verification test to confirm historical knowledge depth.
+
+### `singapore-auto-update-tasks.md` — Permanent policy currency
+
+10 copy-paste task blocks to set up automated policy monitoring:
+
+| Block | Task name | Schedule | What it does |
+|---|---|---|---|
+| 1 | `daily-policy-watch` | Every morning 7am | Checks 8 agency newsrooms; silent if nothing new |
+| 2 | `weekly-policy-digest` | Every Monday 8am | Structured 5-point digest of all policy changes |
+| 3 | `budget-season-watch` | Feb 1 – Mar 31 daily | Same-day Budget and COS updates |
+| 4 | `parliament-sitting-watch` | Every Tuesday 6pm | PQ replies on housing, CPF, healthcare, employment |
+| 5 | `monthly-policy-refresh` | 1st of every month | Re-ingests all current policy pages |
+| 6 | `cpf-quarterly-rates` | Jan/Apr/Jul/Oct 1 | CPF interest rates + Basic Healthcare Sum |
+| 7 | `urgent-policy-alerts` | Every day 12pm | Singapore Press Centre for major announcements |
+| 8 | `pre-mps-briefing` | Your MPS evening | Full pre-session policy brief |
+| 9 | `annual-policy-calendar` | Key annual dates | CPF rate day, Budget month, COS month, mid-year |
+| 10 | Task management | On demand | `/tasks`, pause, resume, stop |
 
 ---
 
@@ -79,13 +148,13 @@ Constituent data is highly sensitive. Every security control is non-negotiable.
 | Control | What it does |
 |---|---|
 | **API key isolation** | OneCLI Agent Vault proxies all Anthropic API calls — the container never holds a raw key |
-| **Sender allowlist** | Only the MP's verified phone number or Telegram ID can trigger the agent; all others are silently dropped |
+| **Sender allowlist** | Only the MP's verified number can trigger the agent; all others are silently dropped |
 | **Container isolation** | Each channel group runs in its own Docker container with its own filesystem and Claude session |
 | **Mount allowlist** | Containers can only access explicitly permitted directories — `.ssh`, `.aws`, credentials are blocked |
 | **Local-only voice** | whisper.cpp transcribes voice notes on-device; audio bytes never leave the machine |
 | **Local-only embeddings** | nomic-embed-text runs in Ollama locally; no document content sent to cloud embedding APIs |
 | **Web UI binding** | Web UI binds to `127.0.0.1` only — not accessible from the network |
-| **Group name validation** | Group folder names are strictly validated (alphanumeric, hyphens, underscores only) |
+| **Group name validation** | Group folder names strictly validated (alphanumeric, hyphens, underscores only) |
 
 > **On prompt injection:** This is an acknowledged open problem. The sender allowlist is the primary defence. Do not connect the agent to systems whose compromise would be severe.
 
@@ -156,7 +225,7 @@ Edit `~/.config/nanoclaw/sender-allowlist.json`:
 }
 ```
 
-Replace `6591234567` with the MP's number in international format. `drop` mode means any message from any other number is silently ignored and not stored.
+Replace `6591234567` with the MP's number in international format. Only this number can trigger the agent.
 
 ### 3. Pair your channel
 
@@ -177,11 +246,8 @@ Create a bot via `@BotFather`, paste the token when prompted.
 ### 4. Set up local AI
 
 ```bash
-# Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
 ollama pull nomic-embed-text
-
-# Connect to NanoClaw
 # In the web UI: /add-ollama
 ```
 
@@ -189,15 +255,21 @@ Voice transcription (whisper.cpp) is included in the container — no extra setu
 
 ### 5. Build the policy knowledge base
 
-In any connected chat, ingest key policy documents:
+Follow `groups/main/singapore-knowledge-ingestion.md` — ingest Priority 1 (HDB) through Priority 10 (CDC/PA) in order.
 
 ```
-ingest this: https://www.hdb.gov.sg/residential/buying-a-flat/understanding-your-eligibility-and-housing-loan-options/flat-and-grant-eligibility
-ingest this: https://www.cpf.gov.sg/member/retirement-income/cpf-life
-ingest this: https://www.msf.gov.sg/comcare
+ingest this: https://www.hdb.gov.sg/buying-a-flat/flat-grant-and-loan-eligibility
+ingest this: https://www.msf.gov.sg/what-we-do/comcare
+ingest this: https://www.cpf.gov.sg/member/cpf-overview
 ```
 
-Or attach PDFs of agency circulars, Budget statements, or COS debates directly to the chat.
+### 6. Build historical policy depth (optional but recommended)
+
+Follow `groups/main/singapore-historical-policies.md` — ingest Tier 1 (legislation) through Tier 7 (Budget archives). This gives the agent the ability to explain why policies exist, not just what they are.
+
+### 7. Set up auto-update tasks
+
+Follow `groups/main/singapore-auto-update-tasks.md` — send each of the 10 task blocks to the agent. Once set up, the agent monitors policy changes automatically and briefs you before every MPS session.
 
 ---
 
@@ -209,9 +281,7 @@ Or attach PDFs of agency circulars, Budget statements, or COS debates directly t
 Constituent: elderly lady, 72, husband passed away, can't afford hospital bill at SGH
 ```
 
-The agent will identify MediFund, CHAS eligibility, and recommend whether to refer to the hospital's medical social worker or write to MOH directly.
-
----
+The agent identifies MediFund and CHAS eligibility, recommends whether to refer to the hospital's medical social worker or write directly to MOH.
 
 ### Pre-meeting briefing
 
@@ -219,35 +289,30 @@ The agent will identify MediFund, CHAS eligibility, and recommend whether to ref
 brief me on [constituent name] before I meet them at 7pm
 ```
 
-The agent retrieves everything in the knowledge graph about that person — case history, previous letters, pending replies, sensitivity flags.
-
----
+Retrieves everything in the knowledge graph about that person — case history, previous letters, pending replies, sensitivity flags.
 
 ### Draft an appeal letter
 
 ```
-draft a letter to HDB appealing for [constituent name] who was rejected for a rental flat. Single mother, 2 kids, income $1,800/month.
+draft a letter to HDB appealing for [name] who was rejected for a rental flat.
+Single mother, 2 kids, income $1,800/month.
 ```
 
-The agent produces a ready-to-sign letter in the correct format, citing the right scheme and eligibility criteria.
-
----
+Produces a ready-to-sign letter in the standard MPS format, citing the correct scheme and eligibility criteria.
 
 ### Policy lookup
 
 ```
 what is the income ceiling for CHAS blue card?
-has the CPF OW ceiling changed for 2026?
+what changed for CPF in 2026?
 what are the FAS criteria for MOE schools?
+why was the Ethnic Integration Policy introduced?
 ```
 
----
-
-### Scheduled briefings
+### Check scheduled tasks
 
 ```
-every Tuesday at 6pm, brief me on cases with no reply after 3 weeks
-every morning at 8am, summarise any new policy updates relevant to my constituency
+/tasks
 ```
 
 ---
@@ -266,7 +331,7 @@ docker inspect $(docker ps -q) | grep -i "sk-ant\|anthropic_api\|api_key"
 docker run --rm -v ~/.ssh:/test alpine ls /test
 # Expected: permission error
 
-# 4. Voice stays on-device — check container logs during a voice note
+# 4. Voice stays on-device
 docker logs $(docker ps -q --filter name=whatsapp) --tail 20
 # Expected: "whisper transcription complete" — no external audio API calls
 
@@ -287,7 +352,10 @@ ollama list | grep nomic-embed-text
 nanoclaw/
 ├── groups/
 │   └── main/
-│       └── CLAUDE.md              ← Agent identity, agency knowledge, letter format
+│       ├── CLAUDE.md                         ← Agent identity, roles, agency knowledge, letter format
+│       ├── singapore-knowledge-ingestion.md  ← 60+ current policy URLs, priority 1–10
+│       ├── singapore-historical-policies.md  ← 70-year policy history, 9 tiers
+│       └── singapore-auto-update-tasks.md    ← 10 scheduled task blocks for auto-monitoring
 ├── src/
 │   ├── index.ts                   # Host process orchestrator
 │   ├── router/index.ts            # Message routing + sender validation
@@ -323,7 +391,7 @@ nanoclaw/
 
 ## Important caveats
 
-1. **Constituent confidentiality is paramount.** The sender allowlist must be configured before pairing any channel. Default mode is `drop` — all unknown senders are silently ignored.
+1. **Constituent confidentiality is paramount.** The sender allowlist must be configured before pairing any channel. Default mode is `drop` — all unknown senders are silently ignored and not stored.
 
 2. **Policy accuracy.** Singapore policies change with each Budget (February) and Committee of Supply (March). The agent flags when information may be outdated, but always verify with the agency before sending a letter under the MP's name.
 
@@ -341,6 +409,10 @@ nanoclaw/
 - [OneCLI Agent Vault](https://github.com/onecli/onecli)
 - [NanoClaw platform](https://github.com/nanocoai/nanoclaw)
 - [HDB](https://www.hdb.gov.sg) · [CPF](https://www.cpf.gov.sg) · [MOM](https://www.mom.gov.sg) · [MOH](https://www.moh.gov.sg) · [MSF](https://www.msf.gov.sg) · [ICA](https://www.ica.gov.sg) · [IRAS](https://www.iras.gov.sg) · [LTA](https://www.lta.gov.sg) · [MOE](https://www.moe.gov.sg)
+- [Singapore Budget Archive](https://singaporebudget.gov.sg)
+- [Singapore Parliament Hansard](https://sprs.parl.gov.sg/search/)
+- [Pair Search](https://search.pair.gov.sg)
+- [SupportGoWhere](https://supportgowhere.life.gov.sg)
 
 ---
 
