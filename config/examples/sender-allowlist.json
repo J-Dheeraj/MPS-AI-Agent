@@ -1,0 +1,9 @@
+{
+  "defaultMode": "drop",
+  "groups": {
+    "main": {
+      "mode": "drop",
+      "allowedSenders": ["YOUR_PHONE_NUMBER@s.whatsapp.net"]
+    }
+  }
+}
