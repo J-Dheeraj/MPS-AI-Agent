@@ -1,104 +1,118 @@
-# NanoClaw — Personal AI Agent
+# MPS-AI-Agent — Personal AI Agent for Singapore MPs
 
-A self-hosted personal AI agent that accumulates a private knowledge graph, transcribes voice notes locally, runs semantic search offline, and connects to WhatsApp, Telegram, a web UI, and the terminal — all without ever exposing your API keys to a container.
+A self-hosted personal AI agent purpose-built for Singapore Members of Parliament conducting **Meet-the-People Sessions (MPS)** and constituency casework.
 
-Based on Dr. Vivian Balakrishnan's "Second Brain" setup, presented at AI Engineer Singapore (May 2026).
+The agent acts as a trusted aide — briefing the MP before each constituent meeting, triaging cases to the correct government agency in real time, drafting formal appeal letters, and maintaining a private knowledge graph of policy, cases, and constituent history. All data stays on-device. No constituent information is ever sent to a cloud service.
+
+Built on the NanoClaw v2 platform with Claude (Anthropic Agent SDK).
 
 ---
 
-## Features
+## What the agent does
 
-- **Four channels** — WhatsApp, Telegram, Web UI (port 3080), Terminal
-- **Private knowledge graph** — mnemon stores facts extracted from articles, voice notes, and documents in local SQLite
-- **On-device voice transcription** — whisper.cpp runs locally; audio never leaves your machine
-- **Local semantic search** — Ollama + nomic-embed-text; no document content sent to cloud embedding APIs
-- **Scheduled briefings** — cron-based morning summaries, weekly digests, one-time reminders
-- **Container isolation** — one Docker container per messaging group; no shared memory or filesystem between groups
-- **API key isolation** — OneCLI Agent Vault proxies all Anthropic API calls; containers never hold a raw key
+| Task | Description |
+|---|---|
+| **Pre-meeting briefing** | Surfaces everything known about a constituent and their case history before the MP walks in |
+| **Live case triage** | Given a one-line problem description, identifies the agency, the exact scheme, and the eligibility criteria — instantly |
+| **Appeal letter drafting** | Produces a formatted MP appeal letter ready for signature; correct tone, correct agency, correct policy citation |
+| **Policy lookup** | Answers questions about HDB, CPF, MOM, MOH, MSF, ICA, IRAS, LTA, MOE, PA schemes — with 2025/2026 Budget updates |
+| **Pending case digest** | Weekly summary of cases awaiting agency replies |
+| **Scheduled briefings** | Morning or pre-MPS summaries of pending matters and recent policy changes |
+
+---
+
+## Agency coverage
+
+The agent has built-in knowledge of:
+
+- **HDB** — BTO grants, resale eligibility, rental flat appeals, HFE letter, income ceilings
+- **CPF** — OA/SA/MA/RA, MediSave claims, CPF LIFE, MRSS, 2026 OW ceiling update
+- **MOM** — EP/S Pass/WP/LTVP, salary disputes, TADM, retrenchment
+- **MOH** — MediShield Life, CHAS, MediFund, CareShield Life, Pioneer/Merdeka Generation Package
+- **MSF** — ComCare (Crisis / SMTA / PA), Silver Support, SSO referrals
+- **ICA** — PR appeals, citizenship, LTVP/LTVP+ extensions
+- **IRAS** — GST Voucher, S&CC and U-Save rebates, income tax disputes
+- **LTA** — Senior concessions, WAV subsidy, disabled parking
+- **MOE** — FAS, Edusave, school transfers, DSA
+- **PA / CDCs** — CDC Vouchers, grassroots referrals, community disputes
 
 ---
 
 ## Architecture
 
 ```
-Messaging apps (WhatsApp / Telegram / Web UI / CLI)
+MP's devices (WhatsApp / Telegram / Web UI / CLI)
         │
         ▼
-NanoClaw host process  (Node.js · src/index.ts)
-  ├─ Router          → validates group name + sender → writes inbound.db
-  ├─ Container runner → spawns one Docker container per agent group
-  ├─ Delivery        → polls outbound.db → sends replies to channels
-  ├─ Scheduler       → cron / interval / one-time tasks
-  └─ OneCLI proxy    → intercepts container HTTPS → injects credentials
+MPS-AI-Agent host process  (Node.js · src/index.ts)
+  ├─ Router          → validates sender → writes to inbound.db
+  ├─ Container runner → one isolated Docker container per channel group
+  ├─ Delivery        → polls outbound.db → sends replies back to MP
+  ├─ Scheduler       → morning briefings, weekly digests, reminders
+  └─ OneCLI proxy    → intercepts all container API calls → injects credentials
         │
         ▼  (one container per active group)
-Docker container  (Bun runtime · nanoclaw-agent image)
-  ├─ Claude Agent SDK   → reasoning + tool use
-  ├─ mnemon             → SQLite + FTS5 knowledge graph
-  ├─ whisper.cpp        → on-device speech-to-text
-  ├─ Ollama client      → local vector embeddings
-  └─ /workspace/group   → bind-mounted group directory
+Docker container  (Bun runtime)
+  ├─ Claude Agent SDK   → reasoning, triage, letter drafting
+  ├─ mnemon             → private case + policy knowledge graph (SQLite)
+  ├─ whisper.cpp        → on-device voice transcription (voice notes → text)
+  ├─ Ollama client      → local semantic search (nomic-embed-text)
+  └─ groups/main/       → bind-mounted; CLAUDE.md loaded every session
         │
-        ▼  (two SQLite files per session)
+        ▼
   inbound.db   ← host writes, container reads
   outbound.db  ← container writes, host reads
 ```
 
-**Three-stage knowledge pipeline:**
+**Key files:**
 
-```
-Raw sources         →   mnemon graph            →   wiki pages
-(voice notes,           (structured facts,          (Obsidian vault,
- articles,               graph nodes,                entities / concepts /
- web clips,              FTS5 semantic search)        timelines)
- documents)
-```
+- `groups/main/CLAUDE.md` — agent identity, agency knowledge base, letter format, behavioural rules
+- `~/.config/nanoclaw/sender-allowlist.json` — controls who can trigger the agent (MP's number only)
+- `~/.config/nanoclaw/mount-allowlist.json` — controls what the container can access on disk
 
 ---
 
-## Tech Stack
+## Security
 
-| Component | Tool |
+Constituent data is highly sensitive. Every security control is non-negotiable.
+
+| Control | What it does |
 |---|---|
-| LLM | Claude (via Anthropic Agent SDK) |
-| Credential proxy | OneCLI Agent Vault |
-| WhatsApp | Baileys (WhatsApp Web protocol) |
-| Telegram | node-telegram-bot-api |
-| Web UI | Express · port 3080 |
-| Knowledge graph | mnemon (SQLite + FTS5) |
-| Local embeddings | Ollama + nomic-embed-text |
-| Voice transcription | whisper.cpp (on-device) |
-| Storage | SQLite (inbound / outbound per session) |
-| Containers | Docker (WSL2 backend) |
-| Notes browser | Obsidian (optional) |
+| **API key isolation** | OneCLI Agent Vault proxies all Anthropic API calls — the container never holds a raw key |
+| **Sender allowlist** | Only the MP's verified phone number or Telegram ID can trigger the agent; all others are silently dropped |
+| **Container isolation** | Each channel group runs in its own Docker container with its own filesystem and Claude session |
+| **Mount allowlist** | Containers can only access explicitly permitted directories — `.ssh`, `.aws`, credentials are blocked |
+| **Local-only voice** | whisper.cpp transcribes voice notes on-device; audio bytes never leave the machine |
+| **Local-only embeddings** | nomic-embed-text runs in Ollama locally; no document content sent to cloud embedding APIs |
+| **Web UI binding** | Web UI binds to `127.0.0.1` only — not accessible from the network |
+| **Group name validation** | Group folder names are strictly validated (alphanumeric, hyphens, underscores only) |
+
+> **On prompt injection:** This is an acknowledged open problem. The sender allowlist is the primary defence. Do not connect the agent to systems whose compromise would be severe.
 
 ---
 
 ## Prerequisites
 
-Run all of these in your **WSL2 Ubuntu** terminal before installing.
+Run in your **WSL2 Ubuntu** terminal:
 
 ```bash
-# 1. Confirm WSL2 (not WSL1) — VERSION column must show 2
-wsl.exe --list --verbose
+# 1. Confirm WSL2
+wsl.exe --list --verbose   # VERSION must show 2 for Ubuntu
 
-# 2. Install build tools
-sudo apt-get update
-sudo apt-get install -y build-essential python3 git curl
+# 2. Build tools
+sudo apt-get update && sudo apt-get install -y build-essential python3 git curl
 
-# 3. Confirm Docker is reachable from WSL
+# 3. Docker reachable from WSL
 docker ps
-# If this fails: Docker Desktop → Settings → Resources →
-# WSL Integration → enable Ubuntu → Apply & Restart → wsl --shutdown
+# If not: Docker Desktop → Settings → Resources → WSL Integration → enable Ubuntu
 
-# 4. Clone into the Linux filesystem (NOT /mnt/c/ — 10-100x slower for builds)
+# 4. Clone into Linux filesystem (not /mnt/c/ — 10-100x slower)
 cd ~
-git clone https://github.com/J-Dheeraj/Personal-AI-Agent- nanoclaw
+git clone https://github.com/J-Dheeraj/MPS-AI-Agent nanoclaw
 cd nanoclaw
 
-# 5. Have your Anthropic API key ready (sk-ant-...)
-# Get one at: https://console.anthropic.com/settings/api-keys
-# Add $10–20 credit before starting.
+# 5. Anthropic API key ready (sk-ant-...)
+# https://console.anthropic.com/settings/api-keys — add $10–20 credit
 ```
 
 ---
@@ -110,44 +124,25 @@ cd ~/nanoclaw
 bash nanoclaw.sh
 ```
 
-The installer will:
+The installer:
 
-1. Check / install Node 22 (via nvm) and pnpm 10
-2. Install and configure **OneCLI Agent Vault** — paste your `sk-ant-...` key when prompted. OneCLI stores it; NanoClaw never touches it again.
-3. Build the agent Docker container image
-4. Create security config files (`mount-allowlist.json`, `sender-allowlist.json`)
-5. Register a systemd user service (or a start script if systemd is absent)
+1. Installs Node 22 (nvm) and pnpm 10
+2. Installs **OneCLI Agent Vault** and stores your API key — the agent never sees it directly
+3. Builds the Docker agent container image
+4. Creates `~/.config/nanoclaw/mount-allowlist.json` and `sender-allowlist.json`
+5. Registers a systemd user service
 
 ---
 
-## Security Configuration
+## First-time setup
 
-Do this **before** pairing any messaging channel.
+### 1. Customise the agent identity
 
-### Mount allowlist
+Edit `groups/main/CLAUDE.md` — replace `[MP NAME]` and `[CONSTITUENCY]` with the MP's actual name and constituency before first use.
 
-Controls which host directories containers may access. Lives outside the project root at `~/.config/nanoclaw/mount-allowlist.json` so containers cannot read it.
+### 2. Set your sender allowlist
 
-```json
-{
-  "allowedPaths": [
-    "~/nanoclaw/groups",
-    "~/nanoclaw/data",
-    "~/Documents/nanoclaw-ingest"
-  ],
-  "blockedPatterns": [
-    ".ssh", ".aws", ".gnupg", ".config/gh", ".config/nanoclaw",
-    "*.pem", "*.key", "*.p12", "*.pfx",
-    "id_rsa", "id_ed25519", "credentials", ".netrc"
-  ]
-}
-```
-
-Never add `~` or `/home` as an allowed path.
-
-### Sender allowlist
-
-Controls which senders can trigger the agent. `drop` mode silently ignores and does not store messages from unlisted senders.
+Edit `~/.config/nanoclaw/sender-allowlist.json`:
 
 ```json
 {
@@ -155,274 +150,197 @@ Controls which senders can trigger the agent. `drop` mode silently ignores and d
   "groups": {
     "main": {
       "mode": "drop",
-      "allowedSenders": ["YOUR_PHONE_NUMBER@s.whatsapp.net"]
+      "allowedSenders": ["6591234567@s.whatsapp.net"]
     }
   }
 }
 ```
 
-Replace `YOUR_PHONE_NUMBER` with your number in international format (e.g. `6591234567`).
+Replace `6591234567` with the MP's number in international format. `drop` mode means any message from any other number is silently ignored and not stored.
 
-### OneCLI rate limits (recommended)
+### 3. Pair your channel
 
-```bash
-# Limit email sends to 5/hour
-onecli rules create \
-  --name "Email send rate limit" \
-  --host-pattern "gmail.googleapis.com" \
-  --path-pattern "/gmail/v1/users/*/messages/send" \
-  --action rate_limit --rate-limit 5 --rate-window 1h
-
-# Limit delete operations to 3/hour
-onecli rules create \
-  --name "Delete rate limit" \
-  --host-pattern "*.googleapis.com" \
-  --path-pattern "*/delete*" \
-  --action rate_limit --rate-limit 3 --rate-window 1h
-```
-
----
-
-## Adding Channels
-
-### WhatsApp
-
+**WhatsApp:**
 ```
 /add-whatsapp
 ```
+Scan the QR code: WhatsApp → Settings → Linked Devices → Link a Device.
 
-Scan the QR code with WhatsApp → Settings → Linked Devices → Link a Device.
-
-> **Note:** Baileys uses the WhatsApp Web protocol, which is technically against WhatsApp's ToS for automated use. This is intended for personal use only.
-
-### Telegram
-
+**Telegram:**
 ```
 /add-telegram
 ```
+Create a bot via `@BotFather`, paste the token when prompted.
 
-1. Message `@BotFather` on Telegram → `/newbot`
-2. Copy the token (`123456789:ABC-...`)
-3. Paste it into NanoClaw when prompted
-4. Add your Telegram user ID to `sender-allowlist.json` (find it by messaging `@userinfobot`)
+**Web UI:** Available immediately at `http://localhost:3080`.
 
-### Web UI
-
-Available immediately at **http://localhost:3080** — no extra setup required.
-
-### Terminal
-
-Start the service and type directly into the prompt:
-
-```bash
-bash start-nanoclaw.sh
-```
-
----
-
-## Local AI Setup
-
-### Embeddings (Ollama)
+### 4. Set up local AI
 
 ```bash
 # Install Ollama
 curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull the embedding model (274 MB — runs on any modern CPU)
 ollama pull nomic-embed-text
 
-# Verify
-ollama list
+# Connect to NanoClaw
+# In the web UI: /add-ollama
 ```
 
-Then in the NanoClaw web UI:
+Voice transcription (whisper.cpp) is included in the container — no extra setup needed.
+
+### 5. Build the policy knowledge base
+
+In any connected chat, ingest key policy documents:
 
 ```
-/add-ollama
+ingest this: https://www.hdb.gov.sg/residential/buying-a-flat/understanding-your-eligibility-and-housing-loan-options/flat-and-grant-eligibility
+ingest this: https://www.cpf.gov.sg/member/retirement-income/cpf-life
+ingest this: https://www.msf.gov.sg/comcare
 ```
 
-### Voice transcription
-
-whisper.cpp is included in the agent container. Send a voice note to your WhatsApp or Telegram bot — it will be transcribed locally within 10–30 seconds and ingested into the knowledge graph automatically.
+Or attach PDFs of agency circulars, Budget statements, or COS debates directly to the chat.
 
 ---
 
-## Using the Knowledge Graph
+## Using the agent
 
-| Command | What happens |
-|---|---|
-| `ingest this: https://example.com/article` | Article extracted → facts added to knowledge graph |
-| `what do I know about [topic]?` | Semantic search of knowledge graph |
-| Send a voice note | Transcribed locally → ingested into graph |
-| Attach a PDF or document | Parsed and ingested |
-| `summarise everything you know about [person]` | Graph synthesis |
+### Live triage during MPS
 
-Browse the wiki in Obsidian (optional):
+```
+Constituent: elderly lady, 72, husband passed away, can't afford hospital bill at SGH
+```
 
-1. Download Obsidian from [obsidian.md](https://obsidian.md)
-2. Open folder as vault → `~/nanoclaw/groups/main/wiki/`
-3. Pages are organized under `entities/`, `concepts/`, `timelines/`
+The agent will identify MediFund, CHAS eligibility, and recommend whether to refer to the hospital's medical social worker or write to MOH directly.
 
 ---
 
-## Scheduled Tasks
+### Pre-meeting briefing
 
 ```
-every morning at 7:30am, send me a summary of what I've saved this week
-in 2 hours remind me to review the proposal
-every Sunday at 9am, compile a digest of everything I ingested this week
+brief me on [constituent name] before I meet them at 7pm
 ```
 
-Check active tasks:
+The agent retrieves everything in the knowledge graph about that person — case history, previous letters, pending replies, sensitivity flags.
+
+---
+
+### Draft an appeal letter
 
 ```
-/tasks
+draft a letter to HDB appealing for [constituent name] who was rejected for a rental flat. Single mother, 2 kids, income $1,800/month.
+```
+
+The agent produces a ready-to-sign letter in the correct format, citing the right scheme and eligibility criteria.
+
+---
+
+### Policy lookup
+
+```
+what is the income ceiling for CHAS blue card?
+has the CPF OW ceiling changed for 2026?
+what are the FAS criteria for MOE schools?
 ```
 
 ---
 
-## Agent Commands
+### Scheduled briefings
 
-| Command | Action |
-|---|---|
-| `/add-whatsapp` | Pair WhatsApp channel |
-| `/add-telegram` | Pair Telegram channel |
-| `/add-ollama` | Connect local embedding model |
-| `/tasks` | List active scheduled tasks |
-| `/status` | Show agent and container health |
-| `/help` | List all available commands |
+```
+every Tuesday at 6pm, brief me on cases with no reply after 3 weeks
+every morning at 8am, summarise any new policy updates relevant to my constituency
+```
 
 ---
 
-## Security Verification Checklist
-
-Run after full setup. Do not skip any item.
+## Security verification checklist
 
 ```bash
 # 1. No API keys in any container
 docker inspect $(docker ps -q) | grep -i "sk-ant\|anthropic_api\|api_key"
 # Expected: no output
 
-# 2. OneCLI is the only path to api.anthropic.com
-docker exec $(docker ps -q | head -1) sh -c \
-  "ss -tnp | grep -v localhost | grep -v 127.0.0.1"
-# All external connections should route through OneCLI's local port
+# 2. Sender allowlist active — send from a number not in your allowlist
+# Expected: no response, nothing stored
 
-# 3. Mount allowlist is enforced
+# 3. Mount allowlist enforced
 docker run --rm -v ~/.ssh:/test alpine ls /test
 # Expected: permission error
 
-# 4. Sender allowlist is active — send from a number NOT in your allowlist
-# Expected: no response, no stored message
+# 4. Voice stays on-device — check container logs during a voice note
+docker logs $(docker ps -q --filter name=whatsapp) --tail 20
+# Expected: "whisper transcription complete" — no external audio API calls
 
-# 5. Group folder names are valid
-ls ~/nanoclaw/groups/
-# Every name must match: ^[a-zA-Z0-9_-]+$
+# 5. Embeddings local only
+ollama list | grep nomic-embed-text
+# Expected: model listed; no outbound calls to embedding APIs during ingestion
 
-# 6. Ollama serving embeddings locally
-curl http://localhost:11434/api/tags | grep nomic-embed-text
-
-# 7. whisper.cpp on-device
-docker exec $(docker ps -q | head -1) which whisper-cpp
-
-# 8. Web UI is localhost only (not network-exposed)
+# 6. Web UI localhost only
 # From another machine: curl http://YOUR_PC_IP:3080
 # Expected: connection refused
-# If accessible externally, add WEB_HOST=127.0.0.1 to .env and restart
 ```
 
 ---
 
-## Operations
-
-### Update NanoClaw
-
-```bash
-cd ~/nanoclaw
-git pull
-pnpm install
-./container/build.sh
-systemctl --user restart nanoclaw-v2
-```
-
-### View logs
-
-```bash
-# Main service
-tail -f ~/nanoclaw/logs/nanoclaw.log
-
-# Specific container
-docker logs $(docker ps -q --filter name=whatsapp) -f
-```
-
-### Back up your knowledge graph
-
-```bash
-cp -r ~/nanoclaw/groups/main ~/nanoclaw-backup-$(date +%Y%m%d)
-cp ~/nanoclaw/data/v2.db ~/nanoclaw-data-backup-$(date +%Y%m%d).db
-```
-
----
-
-## Project Structure
+## Project structure
 
 ```
 nanoclaw/
+├── groups/
+│   └── main/
+│       └── CLAUDE.md              ← Agent identity, agency knowledge, letter format
 ├── src/
-│   ├── index.ts                  # Main orchestrator
-│   ├── logger.ts
-│   ├── router/index.ts           # Message routing + group validation
+│   ├── index.ts                   # Host process orchestrator
+│   ├── router/index.ts            # Message routing + sender validation
 │   ├── security/
-│   │   ├── groupNames.ts         # Strict alphanumeric name validation
-│   │   ├── senderAllowlist.ts    # drop / trigger mode enforcement
-│   │   └── mountAllowlist.ts     # Allowlist + blocked pattern enforcement
+│   │   ├── groupNames.ts          # Strict name validation
+│   │   ├── senderAllowlist.ts     # drop / trigger enforcement
+│   │   └── mountAllowlist.ts      # Mount path enforcement
 │   ├── channels/
-│   │   ├── whatsapp.ts           # Baileys connector
-│   │   ├── telegram.ts           # Telegram bot connector
-│   │   ├── webui.ts              # Express on 127.0.0.1:3080
-│   │   └── cli.ts                # readline terminal interface
-│   ├── container/runner.ts       # Docker spawner (no API keys passed)
-│   ├── delivery/index.ts         # outbound.db poller
-│   └── scheduler/index.ts        # node-cron task runner
+│   │   ├── whatsapp.ts            # Baileys connector
+│   │   ├── telegram.ts            # Telegram bot
+│   │   ├── webui.ts               # Express on 127.0.0.1:3080
+│   │   └── cli.ts                 # Terminal interface
+│   ├── container/runner.ts        # Docker spawner (no API keys passed)
+│   ├── delivery/index.ts          # outbound.db poller
+│   └── scheduler/index.ts         # Cron task runner
 ├── container/
-│   ├── Dockerfile                # Bun/Alpine agent image
+│   ├── Dockerfile                 # Bun/Alpine agent image
 │   ├── build.sh
 │   └── agent/
-│       ├── index.ts              # Claude agentic loop
-│       ├── mnemon/index.ts       # SQLite + FTS5 knowledge graph
+│       ├── index.ts               # Claude agentic loop
+│       ├── mnemon/index.ts        # SQLite + FTS5 knowledge graph
 │       └── tools/
-│           ├── ingest.ts         # URL fetch + fact extraction
-│           └── search.ts         # Knowledge graph search
-├── public/index.html             # Web chat UI
-├── config/examples/              # Example security config files
-├── nanoclaw.sh                   # Installer
-├── start-nanoclaw.sh             # Manual start (no systemd)
+│           ├── ingest.ts          # URL / document ingestion
+│           └── search.ts          # Semantic search
+├── public/index.html              # Web chat UI
+├── config/examples/               # Example security config files
+├── nanoclaw.sh                    # Installer
+├── start-nanoclaw.sh              # Manual start (no systemd)
 └── .env.example
 ```
 
 ---
 
-## Important Caveats
+## Important caveats
 
-1. **Prompt injection is not solved.** The sender allowlist and rate limits reduce the blast radius, but are not a complete defence. Do not connect the agent to systems whose compromise would be severe (banking, production databases).
+1. **Constituent confidentiality is paramount.** The sender allowlist must be configured before pairing any channel. Default mode is `drop` — all unknown senders are silently ignored.
 
-2. **WhatsApp ToS.** Baileys uses the WhatsApp Web protocol. This is technically against WhatsApp's terms of service for automated use. Use for personal purposes only and understand the risk.
+2. **Policy accuracy.** Singapore policies change with each Budget (February) and Committee of Supply (March). The agent flags when information may be outdated, but always verify with the agency before sending a letter under the MP's name.
 
-3. **API costs.** Claude API is pay-as-you-go. Frequent scheduled tasks with large context windows can add up. Monitor usage at [console.anthropic.com/usage](https://console.anthropic.com/usage) and set a spending limit.
+3. **Prompt injection is not solved.** Rate limits and the sender allowlist reduce the blast radius but do not eliminate the risk. Do not connect the agent to external systems whose compromise would be severe.
 
-4. **whisper.cpp model size vs speed.** The `base` model is fast but less accurate. The `medium` model is more accurate but slower on a laptop. Start with `base` and upgrade if transcription quality is poor.
+4. **WhatsApp ToS.** Baileys uses the WhatsApp Web protocol, which is against WhatsApp's ToS for automated use. This is for personal/professional use only.
+
+5. **API costs.** Monitor usage at [console.anthropic.com/usage](https://console.anthropic.com/usage). Set a spending limit before going live.
 
 ---
 
 ## References
 
-- [NanoClaw GitHub](https://github.com/nanocoai/nanoclaw)
-- [Official docs](https://docs.nanoclaw.dev)
-- [Security deep dive](https://docs.nanoclaw.dev/advanced/security-model)
-- [OneCLI Agent Vault](https://github.com/onecli/onecli)
-- [Dr. Balakrishnan's original gist](https://gist.github.com/VivianBalakrishnan/a7d4eec3833baee4971a0ee54b08f322)
 - [Anthropic Console](https://console.anthropic.com)
-- [NanoClaw Discord](https://discord.gg/VDdww8qS42)
+- [OneCLI Agent Vault](https://github.com/onecli/onecli)
+- [NanoClaw platform](https://github.com/nanocoai/nanoclaw)
+- [HDB](https://www.hdb.gov.sg) · [CPF](https://www.cpf.gov.sg) · [MOM](https://www.mom.gov.sg) · [MOH](https://www.moh.gov.sg) · [MSF](https://www.msf.gov.sg) · [ICA](https://www.ica.gov.sg) · [IRAS](https://www.iras.gov.sg) · [LTA](https://www.lta.gov.sg) · [MOE](https://www.moe.gov.sg)
 
 ---
 
