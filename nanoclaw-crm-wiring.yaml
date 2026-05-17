@@ -1,0 +1,113 @@
+# nanoclaw-crm-wiring.yaml
+# ========================
+# Paste these sections into your ~/nanoclaw/nanoclaw.yaml
+# They wire the MCP CRM Bridge into both agent groups.
+#
+# BEFORE: your nanoclaw.yaml has no mcp_servers section.
+# AFTER:  all agents can call lookup_constituent, create_case,
+#         attach_letter, update_case_status, get_pending_cases,
+#         get_todays_queue directly in conversation.
+#
+# ── WHERE TO PASTE ────────────────────────────────────────────────────────
+# Add the mcp_servers block at the TOP LEVEL of nanoclaw.yaml
+# (same indentation level as "groups:" and "channels:").
+#
+# Then add the groups/main and groups/mps-volunteers sections
+# if they are not already present.
+# ──────────────────────────────────────────────────────────────────────────
+
+# ┌─────────────────────────────────────────────────────────┐
+# │  PASTE BLOCK 1 — top-level MCP server definition        │
+# └─────────────────────────────────────────────────────────┘
+mcp_servers:
+  crm-bridge:
+    type: stdio                              # NanoClaw will spawn the process
+    command: python3
+    args:
+      - ~/nanoclaw/mcp-crm-server.py        # path to the Python file
+    env:
+      CRM_BACKEND: sqlite                    # change to your backend
+      CRM_DATA_DIR: ~/nanoclaw/crm-data
+      # Add other CRM_* vars here as needed (see bottom of mcp-crm-server.py)
+
+# ┌─────────────────────────────────────────────────────────┐
+# │  PASTE BLOCK 2 — attach server to the main (MP) group   │
+# └─────────────────────────────────────────────────────────┘
+groups:
+  main:
+    role: owner                              # MP has full access
+    mcp_servers:
+      - crm-bridge
+    # ... rest of your existing main group config ...
+
+# ┌─────────────────────────────────────────────────────────┐
+# │  PASTE BLOCK 3 — attach server to the volunteers group  │
+# └─────────────────────────────────────────────────────────┘
+  mps-volunteers:
+    role: member
+    mcp_servers:
+      - crm-bridge
+    # ... rest of your existing mps-volunteers group config ...
+
+# ── HOW TO SWITCH BACKENDS ────────────────────────────────────────────────
+#
+# SQLite (default — works immediately, no setup):
+#   CRM_BACKEND: sqlite
+#
+# Google Sheets:
+#   CRM_BACKEND: google_sheets
+#   (also set CRM_GSHEET_ID and CRM_GSHEET_CREDENTIALS)
+#
+# REST API (your existing system):
+#   CRM_BACKEND: rest_api
+#   (also set CRM_REST_BASE_URL, CRM_REST_API_KEY, CRM_REST_API_HEADER)
+#
+# SharePoint:
+#   CRM_BACKEND: sharepoint
+#   (also set CRM_SP_SITE_URL, CRM_SP_CLIENT_ID, CRM_SP_CLIENT_SECRET)
+#
+# CSV (read-only, for importing old records):
+#   CRM_BACKEND: csv
+#
+# ── VERIFY THE WIRING ─────────────────────────────────────────────────────
+#
+# After restarting NanoClaw, send this message to the agent:
+#
+#   what tools do you have access to?
+#
+# You should see: lookup_constituent, create_case, attach_letter,
+# update_case_status, get_pending_cases, get_todays_queue
+#
+# Then test with:
+#
+#   look up constituent S1234567A
+#   → should return {"found": false, "message": "Constituent not found..."}
+#      (correct — empty DB)
+#
+#   what cases are we waiting on that are more than 21 days old?
+#   → should return [] (empty list — no cases yet)
+#
+# ── EXAMPLE MPS SESSION FLOW ──────────────────────────────────────────────
+#
+# Volunteer intakes constituent, then tells agent:
+#
+#   [Volunteer in WhatsApp group]
+#   Constituent S9876543B, Mdm Tan Ah Lian, 65F. HDB rental flat.
+#   Facing eviction notice. Has nowhere to go. Urgent.
+#   → Agent calls lookup_constituent("S9876543B") — returns full history
+#   → Agent briefs MP on past cases and current policy
+#
+# MP drafts appeal letter, then:
+#   create a case for S9876543B — HDB rental appeal, urgent
+#   → Agent calls create_case(...) → returns case_id 42
+#
+#   attach this letter to case 42: [paste letter text]
+#   → Agent calls attach_letter(42, letter_text, "Director, HDB Branch")
+#
+# Three weeks later:
+#   HDB replied to case 42 — they will review. Mark as replied.
+#   → Agent calls update_case_status(42, "replied", "HDB to review within 4 weeks", True)
+#
+# Pre-MPS briefing every week:
+#   what cases are overdue for a reply?
+#   → Agent calls get_pending_cases(21) → list sorted by oldest first

@@ -45,27 +45,35 @@ Built-in knowledge of every agency encountered at MPS:
 ## Architecture
 
 ```
-MP's devices (WhatsApp / Telegram / Web UI / CLI)
-        │
-        ▼
-MPS-AI-Agent host process  (Node.js · src/index.ts)
-  ├─ Router          → validates sender → writes to inbound.db
-  ├─ Container runner → one isolated Docker container per channel group
-  ├─ Delivery        → polls outbound.db → sends replies back to MP
-  ├─ Scheduler       → morning briefings, weekly digests, auto-updates
-  └─ OneCLI proxy    → intercepts all container API calls → injects credentials
-        │
-        ▼  (one container per active group)
-Docker container  (Bun runtime)
-  ├─ Claude Agent SDK   → reasoning, triage, letter drafting
-  ├─ mnemon             → private case + policy knowledge graph (SQLite + FTS5)
-  ├─ whisper.cpp        → on-device voice transcription
-  ├─ Ollama client      → local semantic search (nomic-embed-text)
-  └─ groups/main/       → bind-mounted; all 4 knowledge files loaded every session
-        │
-        ▼
-  inbound.db   ← host writes, container reads
-  outbound.db  ← container writes, host reads
+MP's devices                    Volunteers' devices
+(WhatsApp / Telegram / Web UI)  (WhatsApp group)
+        │                               │
+        └──────────────┬────────────────┘
+                       ▼
+        MPS-AI-Agent host process  (Node.js · src/index.ts)
+          ├─ Router          → validates sender allowlist → writes to inbound.db
+          ├─ Container runner → one isolated Docker container per group
+          ├─ Delivery        → polls outbound.db → sends replies
+          ├─ Scheduler       → briefings, digests, policy auto-updates
+          └─ OneCLI proxy    → intercepts all container HTTPS → injects credentials
+                       │
+          ┌────────────┴─────────────┐
+          ▼                          ▼
+  Docker: group/main           Docker: group/mps-volunteers
+  (MP — role: owner)           (intake team — role: member)
+  ├─ Claude Agent SDK          ├─ Claude Agent SDK
+  ├─ mnemon (knowledge graph)  ├─ mnemon (knowledge graph)
+  ├─ whisper.cpp               ├─ whisper.cpp
+  ├─ Ollama client             ├─ Ollama client
+  ├─ MCP: crm-bridge ──────────┤  MCP: crm-bridge
+  └─ groups/main/ (4 files)   └─ groups/main/ (4 files)
+          │                          │
+          ▼                          ▼
+    inbound.db / outbound.db   inbound.db / outbound.db
+          │
+          ▼
+    mcp-crm-server.py  (FastMCP, stdio)
+    └─ SQLite / Google Sheets / REST API / SharePoint / CSV
 ```
 
 ---
@@ -163,18 +171,28 @@ pip install -r requirements-crm.txt
 
 ### Wire into NanoClaw
 
-The `nanoclaw.yaml` file at the project root configures the MCP server. Edit the `mcp_servers` section to match your backend:
+`nanoclaw.yaml` at the project root wires the CRM bridge into both agent groups. The key section:
 
 ```yaml
 mcp_servers:
-  - name: mps-crm
-    transport: stdio
+  crm-bridge:
+    type: stdio
     command: python3
-    args: [mcp-crm-server.py]
+    args: [~/nanoclaw/mcp-crm-server.py]
     env:
       CRM_BACKEND: sqlite
       CRM_DATA_DIR: ~/nanoclaw/crm-data
+
+groups:
+  main:
+    role: owner              # MP's personal channel
+    mcp_servers: [crm-bridge]
+  mps-volunteers:
+    role: member             # Intake volunteers
+    mcp_servers: [crm-bridge]
 ```
+
+See `nanoclaw-crm-wiring.yaml` for the full copy-paste wiring guide with all 5 backend configurations, verification steps, and a complete annotated MPS session example.
 
 ### MCP tools exposed to the agent
 
@@ -434,8 +452,9 @@ nanoclaw/
 │       ├── singapore-historical-policies.md  ← 70-year policy history, 9 tiers
 │       └── singapore-auto-update-tasks.md    ← 10 scheduled task blocks for auto-monitoring
 ├── mcp-crm-server.py                         ← CRM Bridge MCP server (5 backends)
+├── nanoclaw-crm-wiring.yaml                  ← Copy-paste wiring guide for nanoclaw.yaml
 ├── requirements-crm.txt                      ← Python deps for CRM bridge
-├── nanoclaw.yaml                             ← NanoClaw config + MCP server wiring
+├── nanoclaw.yaml                             ← Full config: 2 groups, MCP wired to both
 ├── src/
 │   ├── index.ts                   # Host process orchestrator
 │   ├── router/index.ts            # Message routing + sender validation

@@ -1,4 +1,4 @@
-# nanoclaw.yaml — NanoClaw / MPS-AI-Agent configuration
+# nanoclaw.yaml — MPS-AI-Agent configuration
 # Place at: ~/nanoclaw/nanoclaw.yaml
 
 agent:
@@ -6,51 +6,96 @@ agent:
   version: 2
 
 # ---------------------------------------------------------------------------
-# MCP servers — wired into every agent session
+# MCP servers — spawned by NanoClaw, available to all wired groups
 # ---------------------------------------------------------------------------
 
 mcp_servers:
-
-  # MPS CRM Bridge — case management, constituent lookup, letter storage
-  - name: mps-crm
-    transport: stdio
+  crm-bridge:
+    type: stdio                              # NanoClaw spawns the process
     command: python3
     args:
-      - mcp-crm-server.py
+      - ~/nanoclaw/mcp-crm-server.py
     env:
-      CRM_BACKEND: sqlite          # sqlite | google_sheets | rest_api | sharepoint | csv
+      CRM_BACKEND: sqlite                    # sqlite | google_sheets | rest_api | sharepoint | csv
       CRM_DATA_DIR: ~/nanoclaw/crm-data
       CRM_SQLITE_FILE: mps-cases.db
-    # For Google Sheets backend, replace the env block above with:
-    # env:
-    #   CRM_BACKEND: google_sheets
-    #   CRM_GSHEET_ID: <your-spreadsheet-id>
-    #   CRM_GSHEET_CREDENTIALS: ~/nanoclaw/crm-data/gsheet-credentials.json
-    #
-    # For SharePoint backend:
-    # env:
-    #   CRM_BACKEND: sharepoint
-    #   CRM_SP_SITE_URL: https://yourorg.sharepoint.com/sites/MPS
-    #   CRM_SP_CLIENT_ID: <client-id>
-    #   CRM_SP_CLIENT_SECRET: <client-secret>
-    #   CRM_SP_LIST_NAME: MPS Cases
+      # ── Google Sheets ──────────────────────────────────────────────────
+      # CRM_BACKEND: google_sheets
+      # CRM_GSHEET_ID: <spreadsheet-id-from-url>
+      # CRM_GSHEET_CREDENTIALS: ~/nanoclaw/crm-data/gsheet-credentials.json
+      #
+      # ── REST API ───────────────────────────────────────────────────────
+      # CRM_BACKEND: rest_api
+      # CRM_REST_BASE_URL: https://your-crm.example.com/api/v1
+      # CRM_REST_API_KEY: your-api-key
+      # CRM_REST_API_HEADER: X-API-Key
+      #
+      # ── SharePoint ─────────────────────────────────────────────────────
+      # CRM_BACKEND: sharepoint
+      # CRM_SP_SITE_URL: https://yourorg.sharepoint.com/sites/MPS
+      # CRM_SP_CLIENT_ID: <app-registration-client-id>
+      # CRM_SP_CLIENT_SECRET: <app-registration-client-secret>
+      # CRM_SP_LIST_NAME: MPS Cases
+      #
+      # ── CSV (read-only) ────────────────────────────────────────────────
+      # CRM_BACKEND: csv
+      # CRM_CSV_CASES: ~/nanoclaw/crm-data/cases.csv
+      # CRM_CSV_LETTERS: ~/nanoclaw/crm-data/letters.csv
 
 # ---------------------------------------------------------------------------
-# Groups — one entry per messaging channel group
+# Groups
 # ---------------------------------------------------------------------------
 
 groups:
+
+  # ── Main group (MP's personal channel) ───────────────────────────────────
   main:
-    claude_md: groups/main/CLAUDE.md
-    description: MP's primary channel — WhatsApp or Telegram
-    elevated: true            # Main group has elevated privileges
+    role: owner                              # Full access — MP only
+    claude_md: groups/main/CLAUDE.md         # Agent identity + policy knowledge
+    elevated: true                           # Main group has elevated privileges
+    mcp_servers:
+      - crm-bridge                           # CRM tools available to MP
+
+  # ── Volunteers group (intake team) ───────────────────────────────────────
+  mps-volunteers:
+    role: member                             # Can create cases + look up constituents
+    claude_md: groups/main/CLAUDE.md         # Shares same policy knowledge base
+    elevated: false
+    mcp_servers:
+      - crm-bridge                           # CRM tools available to volunteers too
 
 # ---------------------------------------------------------------------------
-# Scheduler defaults
+# Sender security — enforced before any message reaches the agent
+# ---------------------------------------------------------------------------
+# Configure allowed senders in: ~/.config/nanoclaw/sender-allowlist.json
+# Default mode: drop — unknown senders are silently ignored and not stored.
+#
+# Example sender-allowlist.json:
+# {
+#   "defaultMode": "drop",
+#   "groups": {
+#     "main": {
+#       "mode": "drop",
+#       "allowedSenders": ["6591234567@s.whatsapp.net"]
+#     },
+#     "mps-volunteers": {
+#       "mode": "drop",
+#       "allowedSenders": [
+#         "6591234567@s.whatsapp.net",
+#         "6598765432@s.whatsapp.net"
+#       ]
+#     }
+#   }
+# }
+
+# ---------------------------------------------------------------------------
+# Scheduler
 # ---------------------------------------------------------------------------
 
 scheduler:
   timezone: Asia/Singapore
+  # Scheduled tasks are created via natural language commands in chat.
+  # See groups/main/singapore-auto-update-tasks.md for the 10 task blocks.
 
 # ---------------------------------------------------------------------------
 # OneCLI Agent Vault proxy
@@ -59,11 +104,22 @@ scheduler:
 onecli:
   port: 4891
   proxy_target: https://api.anthropic.com
+  # API keys are stored in OneCLI vault — never in this file or any container.
+  # Verify: docker inspect $(docker ps -q) | grep -i "sk-ant"
+  # Expected: no output.
 
 # ---------------------------------------------------------------------------
 # Web UI
 # ---------------------------------------------------------------------------
 
 webui:
-  host: 127.0.0.1            # Never change to 0.0.0.0
+  host: 127.0.0.1            # Never change to 0.0.0.0 — localhost only
   port: 3080
+
+# ---------------------------------------------------------------------------
+# Mount allowlist
+# ---------------------------------------------------------------------------
+# Configure in: ~/.config/nanoclaw/mount-allowlist.json
+# This file must live OUTSIDE the project directory.
+# Containers can only mount paths on the allowlist.
+# Never add ~ or /home as an allowed path.
