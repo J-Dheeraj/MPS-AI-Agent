@@ -93,7 +93,9 @@ cd "$HERMES_DIR"
 
 # Check if hermes CLI is available
 if command -v hermes &>/dev/null; then
-  hermes skills evolve --input "$FEEDBACK_INPUT" --profile mps-main
+  # Bug 14 fixed: correct Hermes CLI syntax — --profile precedes the subcommand.
+  # --input is not a valid flag; Hermes reads from feedback-input.md by convention.
+  hermes --profile mps-main skills evolve --now
 else
   echo -e "${YELLOW}WARN: hermes CLI not found in PATH.${NC}"
   echo "Start Hermes manually and run: run skills evolve now"

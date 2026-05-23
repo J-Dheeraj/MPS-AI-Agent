@@ -21,11 +21,16 @@ export function validateMountPath(mountPath: string): boolean {
   const config = loadConfig();
   if (!config) return false; // deny by default if no config
 
-  // Resolve ~ in allowedPaths
+  // Bug 10 fixed: use anchored regex to expand only a leading ~
   const home = process.env.HOME || '/root';
-  const allowedResolved = config.allowedPaths.map(p => p.replace('~', home));
+  const allowedResolved = config.allowedPaths.map(p => p.replace(/^~/, home));
 
-  const isAllowed = allowedResolved.some(allowed => mountPath.startsWith(allowed));
+  // Bug 2 fixed: path-safe prefix check — require trailing slash or exact match
+  // Prevents "/home/user/nanoclaw/groups-evil" from matching "/home/user/nanoclaw/groups"
+  const isAllowed = allowedResolved.some(allowed => {
+    const normalised = allowed.endsWith(path.sep) ? allowed : allowed + path.sep;
+    return mountPath === allowed || mountPath.startsWith(normalised);
+  });
   if (!isAllowed) return false;
 
   const isBlocked = config.blockedPatterns.some(pattern => {

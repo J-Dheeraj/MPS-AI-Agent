@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Bug 17 fixed: pre-commit PII scan on feedback-log.md.
+# Prevents constituent NRIC numbers and phone numbers from being accidentally
+# committed to the public GitHub repository via the feedback log.
+#
+# Install: cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+FEEDBACK_LOG="groups/main/feedback-log.md"
+
+# Only check if feedback-log.md is staged for commit
+if ! git diff --cached --name-only | grep -q "^${FEEDBACK_LOG}$"; then
+  exit 0
+fi
+
+echo "[pre-commit] Scanning ${FEEDBACK_LOG} for PII..."
+
+STAGED_CONTENT=$(git show ":${FEEDBACK_LOG}" 2>/dev/null)
+
+# Check for NRIC patterns (S/T/F/G + 7 digits + letter)
+if echo "$STAGED_CONTENT" | grep -qiE '[STFG][0-9]{7}[A-Z]'; then
+  echo ""
+  echo "ERROR: Possible NRIC detected in ${FEEDBACK_LOG}."
+  echo "Remove all NRICs before committing. Commit aborted."
+  echo ""
+  exit 1
+fi
+
+# Check for Singapore phone number patterns (8-digit starting with 6, 8, or 9)
+if echo "$STAGED_CONTENT" | grep -qE '\b[689][0-9]{7}\b'; then
+  echo ""
+  echo "ERROR: Possible phone number detected in ${FEEDBACK_LOG}."
+  echo "Remove all phone numbers before committing. Commit aborted."
+  echo ""
+  exit 1
+fi
+
+echo "[pre-commit] No NRIC or phone number patterns found. Proceeding."
+exit 0

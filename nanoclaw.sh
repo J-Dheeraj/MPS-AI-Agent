@@ -46,15 +46,26 @@ pnpm install
 # ---------- 5. OneCLI Agent Vault ----------
 info "Setting up OneCLI Agent Vault..."
 if ! command -v onecli &>/dev/null; then
-  warn "OneCLI not found. Install it from: https://github.com/onecli/onecli"
-  warn "Then re-run this installer."
-  warn "OneCLI is required — API keys must never enter containers."
-else
-  info "OneCLI found ✓"
-  read -rsp "Paste your Anthropic API key (sk-ant-...): " ANTHROPIC_KEY
-  echo
-  onecli vault set ANTHROPIC_API_KEY "$ANTHROPIC_KEY"
-  info "API key stored in OneCLI vault ✓ (NanoClaw will never see this key directly)"
+  # Bug 5 fixed: OneCLI absence is fatal — without it, containers would hold raw API keys,
+  # which violates the core security model. Do not allow setup to continue.
+  error "OneCLI not found. Install it first from: https://github.com/onecli/onecli
+       OneCLI is mandatory — it is the only way API keys are kept out of containers.
+       Re-run this installer after OneCLI is installed."
+fi
+info "OneCLI found ✓"
+read -rsp "Paste your Anthropic API key (sk-ant-...): " ANTHROPIC_KEY
+echo
+onecli vault set ANTHROPIC_API_KEY "$ANTHROPIC_KEY"
+unset ANTHROPIC_KEY  # clear from shell environment immediately after storing
+info "API key stored in OneCLI vault ✓ (NanoClaw will never see this key directly)"
+
+# ---------- 5b. Install pre-commit PII hook ----------
+# Bug 17: installs a git hook that blocks commits containing NRICs or phone numbers
+# in feedback-log.md, preventing constituent data from reaching the public repo.
+if [ -d "$SCRIPT_DIR/.git" ]; then
+  cp "$SCRIPT_DIR/hooks/pre-commit" "$SCRIPT_DIR/.git/hooks/pre-commit"
+  chmod +x "$SCRIPT_DIR/.git/hooks/pre-commit"
+  info "Pre-commit PII scan hook installed ✓"
 fi
 
 # ---------- 6. Build Docker image ----------

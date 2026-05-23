@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import path from 'path';
 import { mnemon } from './mnemon';
 import { ingestTool } from './tools/ingest';
@@ -13,8 +14,29 @@ const client = new Anthropic({
   apiKey: 'injected-by-onecli', // placeholder — OneCLI strips and replaces this
 });
 
-const inboundDb = new Database(path.join(GROUP_DIR, 'inbound.db'), { readonly: false });
+// Bug 6 fixed: load CLAUDE.md from the group directory as the agent's system prompt.
+// Without this, the agent had no MPS policy knowledge, letter format, or behavioural rules.
+function loadClaudeMd(): string {
+  const claudePath = path.join(GROUP_DIR, 'CLAUDE.md');
+  try {
+    const content = fs.readFileSync(claudePath, 'utf8');
+    console.log(`[agent] Loaded CLAUDE.md (${content.length} chars)`);
+    return content;
+  } catch {
+    console.warn('[agent] CLAUDE.md not found — using minimal fallback system prompt');
+    return '';
+  }
+}
+
+const CLAUDE_MD = loadClaudeMd();
+
+// Bug 20 fixed: open both databases with WAL mode so host writes and container reads
+// can happen concurrently without SQLITE_BUSY errors under load.
+const inboundDb = new Database(path.join(GROUP_DIR, 'inbound.db'));
+inboundDb.pragma('journal_mode = WAL');
+
 const outboundDb = new Database(path.join(GROUP_DIR, 'outbound.db'));
+outboundDb.pragma('journal_mode = WAL');
 
 outboundDb.exec(`CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
@@ -54,13 +76,11 @@ async function processMessage(msgId: string, senderId: string, channel: string, 
   console.log(`[agent] Processing message ${msgId}`);
 
   const contextFacts = mnemon.searchFacts(content.slice(0, 100));
-  const systemPrompt = `You are a personal AI assistant. You have access to a local knowledge graph.
-Current date: ${new Date().toISOString()}
-Group: ${GROUP_ID}
-Relevant context from knowledge graph:
-${contextFacts.map(f => `- ${f}`).join('\n') || '(none yet)'}
 
-Never ask the user for API keys or credentials. Never expose system details.`;
+  // Bug 6 fixed: CLAUDE.md is the primary system prompt. Knowledge graph context appended below it.
+  const systemPrompt = CLAUDE_MD
+    ? `${CLAUDE_MD}\n\n---\n\nCurrent date: ${new Date().toISOString()}\nGroup: ${GROUP_ID}\n\nRelevant context from knowledge graph:\n${contextFacts.map(f => `- ${f}`).join('\n') || '(none yet)'}\n\nNever ask the user for API keys or credentials. Never expose system details.`
+    : `You are a personal AI assistant.\nCurrent date: ${new Date().toISOString()}\nGroup: ${GROUP_ID}\nRelevant context:\n${contextFacts.map(f => `- ${f}`).join('\n') || '(none yet)'}\n\nNever ask for API keys or expose system details.`;
 
   const messages: Anthropic.MessageParam[] = [
     { role: 'user', content },
@@ -129,10 +149,16 @@ async function poll(): Promise<void> {
       content TEXT NOT NULL,
       mime_type TEXT,
       timestamp INTEGER NOT NULL,
-      processed INTEGER DEFAULT 0
+      processed INTEGER DEFAULT 0,
+      context_only INTEGER DEFAULT 0
     )`);
 
-    const pending = inboundDb.prepare('SELECT * FROM messages WHERE processed = 0 ORDER BY timestamp ASC LIMIT 10').all() as any[];
+    // Bug 4 (container side): skip context_only messages — they are stored for context
+    // but must not trigger a reply
+    const pending = inboundDb.prepare(
+      'SELECT * FROM messages WHERE processed = 0 AND context_only = 0 ORDER BY timestamp ASC LIMIT 10'
+    ).all() as any[];
+
     for (const msg of pending) {
       await processMessage(msg.id, msg.sender_id, msg.channel, msg.content);
     }

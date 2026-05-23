@@ -28,10 +28,11 @@ export async function router(msg: InboundMessage): Promise<void> {
     return;
   }
 
-  // Check sender allowlist
-  const allowed = checkSenderAllowed(msg.groupId, msg.senderId);
-  if (!allowed) {
-    logger.info({ senderId: msg.senderId, groupId: msg.groupId }, 'Dropped: sender not in allowlist');
+  // Bug 4 fixed: handle tri-state sender decision
+  const decision = checkSenderAllowed(msg.groupId, msg.senderId);
+
+  if (decision === 'drop') {
+    logger.info({ senderId: msg.senderId, groupId: msg.groupId }, 'Dropped: sender not in allowlist (drop mode)');
     return;
   }
 
@@ -41,8 +42,9 @@ export async function router(msg: InboundMessage): Promise<void> {
     fs.mkdirSync(groupDir, { recursive: true });
   }
 
-  // Write to inbound.db
+  // Write to inbound.db — context-only messages are stored but won't trigger the agent
   const db = new Database(path.join(groupDir, 'inbound.db'));
+  db.pragma('journal_mode = WAL'); // Bug 20 (partial): WAL for concurrent host+container access
   db.exec(`CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     sender_id TEXT NOT NULL,
@@ -51,13 +53,23 @@ export async function router(msg: InboundMessage): Promise<void> {
     content TEXT NOT NULL,
     mime_type TEXT,
     timestamp INTEGER NOT NULL,
-    processed INTEGER DEFAULT 0
+    processed INTEGER DEFAULT 0,
+    context_only INTEGER DEFAULT 0
   )`);
 
-  db.prepare(`INSERT OR IGNORE INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, 0)`)
-    .run(msg.id, msg.senderId, msg.channel, msg.type, msg.content, msg.mimeType ?? null, msg.timestamp);
+  db.prepare(`INSERT OR IGNORE INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+    .run(
+      msg.id, msg.senderId, msg.channel, msg.type, msg.content,
+      msg.mimeType ?? null, msg.timestamp,
+      decision === 'context' ? 1 : 0,
+    );
   db.close();
 
-  // Ensure container is running for this group
+  if (decision === 'context') {
+    logger.info({ senderId: msg.senderId, groupId: msg.groupId }, 'Stored for context: non-trigger sender (trigger mode)');
+    return; // Do not start/notify container
+  }
+
+  // 'allow' — ensure container is running and will process this message
   await containerRunner.ensureRunning(msg.groupId);
 }
