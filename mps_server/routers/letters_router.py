@@ -46,12 +46,17 @@ def update_letter(
     db: DBSession = Depends(get_db),
     current_user: User = Depends(require_volunteer),
 ):
-    """Volunteer edits a draft letter."""
+    """
+    Volunteer or vetter edits a draft letter.
+    Vetters edit the final text directly before submitting to MP via POST /vetter-submit.
+    Frozen letters (already submitted to MP) cannot be edited.
+    """
     letter = db.query(Letter).filter(Letter.id == letter_id).first()
     if not letter:
         raise HTTPException(404, "Letter not found")
     if letter.is_frozen:
-        raise HTTPException(403, "Letter is approved — cannot be edited")
+        raise HTTPException(403, "Letter has been submitted to MP — cannot be edited")
+    # Volunteers update draft_content; vetters update both (their edit becomes the final)
     letter.draft_content = content
     db.commit()
     log_event(db, "letter_edited", user_id=current_user.id, role=current_user.role,

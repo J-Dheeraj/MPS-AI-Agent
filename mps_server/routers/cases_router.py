@@ -5,6 +5,9 @@ from pydantic import BaseModel as _BaseModel
 class VetterReturnBody(_BaseModel):
     comment: str
 
+class VetterSubmitBody(_BaseModel):
+    final_content: str   # Vetter's edited final text — saved, frozen, sent to MP
+
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import joinedload
 from ..database import Case, Session, Letter, Resident, get_db, User
@@ -113,25 +116,36 @@ def submit_for_vetting(
               case_id=case_id, client_ip=request.client.host if request.client else None)
     return {"case_id": case_id, "status": case.status}
 
-@router.post("/{case_id}/vetter-pass")
-def vetter_pass(
+@router.post("/{case_id}/vetter-submit")
+def vetter_submit(
     case_id: str,
+    body: VetterSubmitBody,
     request: Request,
     db: DBSession = Depends(get_db),
     current_user: User = Depends(require_vetter),
 ):
+    """
+    Vetter has edited the draft directly and submits it for MP's final check.
+    Saves final_content, freezes the letter, and moves case to pending_mp.
+    This is the primary vetter action — the vetter owns the final letter text.
+    """
     case = db.query(Case).filter(Case.id == case_id).first()
-    if not case or case.status != "drafted":
-        raise HTTPException(400, "Case not in review queue")
-    case.status = "vetted"
+    if not case or case.status not in ("drafted", "assigned"):
+        raise HTTPException(400, "Case is not in a vettable state")
     letter = _latest_letter(case)
-    if letter:
-        letter.status = "vetted"
-        letter.vetted_at = datetime.now(timezone.utc)
+    if not letter:
+        raise HTTPException(400, "No draft letter found for this case")
+    # Save vetter's final edited text and freeze
+    letter.final_content = body.final_content
+    letter.status = "vetted"
+    letter.vetted_at = datetime.now(timezone.utc)
+    letter.is_frozen = True           # no further edits allowed
+    case.status = "pending_mp"        # waiting for MP's final check
     db.commit()
-    log_event(db, "vetter_passed", user_id=current_user.id, role=current_user.role,
-              case_id=case_id, client_ip=request.client.host if request.client else None)
-    return {"case_id": case_id, "status": "vetted"}
+    log_event(db, "vetter_submitted", user_id=current_user.id, role=current_user.role,
+              case_id=case_id, letter_id=letter.id, letter_version=letter.version,
+              client_ip=request.client.host if request.client else None)
+    return {"case_id": case_id, "status": "pending_mp", "letter_id": letter.id}
 
 @router.post("/{case_id}/vetter-return")
 def vetter_return(

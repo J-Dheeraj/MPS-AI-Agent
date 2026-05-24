@@ -215,9 +215,14 @@ async def get_vetter_queue():
     return r.json() if r.status_code == 200 else []
 
 
-async def vetter_pass(case_id):
+async def vetter_submit(case_id, final_content):
+    """Vetter has edited the final text and submits it for MP's final check."""
     async with httpx.AsyncClient(timeout=8) as c:
-        r = await c.post(f"{SERVER}/cases/{case_id}/vetter-pass", headers=_headers())
+        r = await c.post(
+            f"{SERVER}/cases/{case_id}/vetter-submit",
+            json={"final_content": final_content},
+            headers=_headers(),
+        )
     if r.status_code != 200:
         raise APIError(r.status_code, r.json().get("detail", r.text))
     return r.json()
