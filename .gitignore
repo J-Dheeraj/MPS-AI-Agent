@@ -6,3 +6,13 @@ data/whatsapp-auth/
 logs/
 *.log
 container/bin/
+# MPS Server secrets
+mps_server/.env
+mps_server/mps.db
+mps_server/*.db
+*.db-shm
+*.db-wal
+# GTK4 client cache
+__pycache__/
+*.pyc
+.env

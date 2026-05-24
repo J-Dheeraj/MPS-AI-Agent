@@ -1,442 +1,285 @@
 # MPS-AI-Agent — nanoClaw (Production System)
 
-A self-hosted personal AI agent purpose-built for Singapore Members of Parliament conducting **Meet-the-People Sessions (MPS)** and constituency casework.
+A self-hosted AI agent purpose-built for Singapore Members of Parliament conducting **Meet-the-People Sessions (MPS)** and constituency casework.
 
-The agent acts as a trusted aide — briefing the MP before each constituent meeting, triaging cases to the correct government agency in real time, drafting formal appeal letters, and maintaining a private knowledge graph of policy, cases, and constituent history. All data stays on-device. No constituent information is ever sent to a cloud service.
+Volunteers use a **native GTK4 desktop app** to draft formal appeal letters with AI assistance. Vetters review drafts in the same app. The MP approves in the MPS case management platform the next day. All AI inference runs fully **on-premises via Ollama** — no Anthropic API key, no cloud calls, no constituent data ever leaves the LAN.
 
-Built on the **NanoClaw v2** platform with Claude (Anthropic Agent SDK).
-
-> **Combined system:** This repo is the production half of a two-system architecture. The companion repo [MPS-AI-Agent-Hermes](https://github.com/J-Dheeraj/MPS-AI-Agent-Hermes) runs offline as a weekly skill improvement engine (GEPA). See [INTEGRATION.md](./INTEGRATION.md) for the full workflow.
-
----
-
-## Two-system architecture
-
-```
-nanoClaw (this repo) ──────────────────────────────────────────
-  Live constituent interactions (WhatsApp, Telegram, Web UI)
-  Security: OneCLI vault, Docker isolation, local AI, drop mode
-  Knowledge: mnemon graph, 60+ URL ingestion, auto policy watch
-  CRM: case logging, letter storage, overdue tracking
-                │
-                │  Weekly — anonymised correction patterns only
-                │  No NRIC. No names. No case IDs.
-                ▼
-Hermes (companion repo) ───────────────────────────────────────
-  Offline skill improvement engine — no live connections
-  GEPA processes correction patterns from feedback-log.md
-  Generates updated skill files reviewed before applying
-                │
-                │  Approved improvements → CLAUDE.md update
-                ▼
-nanoClaw restarts with improved knowledge
-```
-
-**Security boundary:** constituent data never crosses to Hermes. See [INTEGRATION.md](./INTEGRATION.md) for the full security rules and weekly workflow.
-
----
-
-## What the agent does
-
-| Task | Description |
-|---|---|
-| **Pre-meeting briefing** | Surfaces everything known about a constituent and their case history before the MP walks in |
-| **Live case triage** | Given a one-line problem description, identifies the agency, the exact scheme, and eligibility criteria — instantly |
-| **Appeal letter drafting** | Produces a formatted MP appeal letter ready for signature; correct tone, correct agency, correct policy citation |
-| **Policy lookup** | Answers questions about HDB, CPF, MOM, MOH, MSF, ICA, IRAS, LTA, MOE, PA — with 2025/2026 Budget updates |
-| **Historical context** | Explains why policies exist — drawing on 70 years of Singapore policy history from 1955 to 2026 |
-| **Pending case digest** | Weekly summary of cases awaiting agency replies |
-| **Scheduled briefings** | Morning or pre-MPS summaries of pending matters and recent policy changes |
-| **Auto policy updates** | Monitors 8 agency newsrooms daily and ingests new announcements automatically |
-| **Self-improvement** | Correction patterns logged via `/feedback` are processed weekly by Hermes GEPA and applied back |
-
----
-
-## Agency coverage
-
-Built-in knowledge of every agency encountered at MPS:
-
-| Agency | Coverage |
-|---|---|
-| **HDB** | BTO grants (EHG, PHG, Step-Up), resale eligibility, rental flat appeals, HFE letter, Fresh Start 2026 |
-| **CPF** | OA/SA/MA/RA, MediSave, CPF LIFE, MRSS, 2026 OW ceiling ($8,000), quarterly rate updates |
-| **MOM** | EP/S Pass/WP/LTVP/LOC, salary disputes, TADM, retrenchment, Workfare |
-| **MOH** | MediShield Life, CHAS (Blue/Orange), MediFund, CareShield Life, Pioneer/Merdeka Generation |
-| **MSF** | ComCare (Crisis/SMTA/PA), Silver Support, SSO referrals, ComLink+ |
-| **ICA** | PR appeals, citizenship, LTVP/LTVP+ extensions |
-| **IRAS** | GST Voucher cash/U-Save/S&CC, income tax disputes |
-| **LTA** | Senior concessions, WAV subsidy, disabled parking |
-| **MOE** | FAS, Edusave, school transfers, DSA, SPED |
-| **PA / CDCs** | CDC Vouchers 2026, grassroots referrals |
+> **Companion repo:** [MPS-AI-Agent-Hermes](https://github.com/J-Dheeraj/MPS-AI-Agent-Hermes) runs offline weekly to improve agent skill files via GEPA (Generalised Experience-driven Policy Adaptation, ICLR 2026).
 
 ---
 
 ## Architecture
 
 ```
-MP's devices          Volunteers' devices      Vetters' devices
-(WhatsApp/Telegram/   (WhatsApp group)         (WhatsApp group)
- Web UI)
-        │                    │                        │
-        └────────────────────┼────────────────────────┘
-                             ▼
-          MPS-AI-Agent host process  (Node.js · src/index.ts)
-            ├─ Router          → validates sender allowlist → writes to inbound.db
-            ├─ Container runner → one isolated Docker container per group
-            ├─ Delivery        → polls outbound.db → sends replies
-            ├─ Scheduler       → briefings, digests, policy auto-updates
-            └─ OneCLI proxy    → intercepts all container HTTPS → injects credentials
-                             │
-          ┌──────────────────┼──────────────────┐
-          ▼                  ▼                  ▼
-  Docker: main         Docker: mps-volunteers  Docker: mps-vetters
-  (MP — owner)         (intake — member)       (vetters — member)
-  ├─ Claude SDK        ├─ Claude SDK           ├─ Claude SDK
-  ├─ mnemon            ├─ mnemon               ├─ mnemon
-  ├─ whisper.cpp       ├─ whisper.cpp          ├─ whisper.cpp
-  ├─ Ollama client     ├─ Ollama client        ├─ Ollama client
-  ├─ MCP: crm-bridge   ├─ MCP: crm-bridge      │  (no CRM access)
-  └─ groups/main/      └─ groups/main/         └─ groups/mps-vetters/
-     (4 policy files)     (4 policy files)        (CLAUDE.md)
-          │                  │
-          ▼                  ▼
-    inbound.db /       inbound.db /
-    outbound.db        outbound.db
-          │
-          ▼
-    mcp-crm-server.py  (FastMCP, stdio)
-    └─ SQLite / Google Sheets / REST API / SharePoint / CSV
+┌─────────────────────────────── LAN only ─────────────────────────────────┐
+│                                                                            │
+│  [Volunteer laptop]      [Vetter laptop]       [Central server]           │
+│   GTK4 client             GTK4 client           FastAPI  (mps_server)     │
+│   start-client.sh    ──── REST + WebSocket ───► port 8000                 │
+│                                                     │                      │
+│                                                     ▼                      │
+│                                              Ollama  :11434                │
+│                                              llama3.2:3b  (or 3.1:8b)     │
+│                                              nomic-embed-text              │
+│                                                     │                      │
+│                                                     ▼                      │
+│                                              SQLite  (mps.db)             │
+│                                              Append-only audit log         │
+└────────────────────────────────────────────────────────────────────────────┘
+
+MP reviews letters next day in MPS case management platform (separate system).
+MPS platform auto-sends approved letters to agencies.
 ```
 
 ---
 
-## Knowledge base and group identities
-
-### groups/main/ — MP's private channel
-
-All four files are loaded into the MP agent's context at the start of every session.
-
-### `CLAUDE.md` — Agent identity and core knowledge
-
-Defines the agent's identity, roles, and all agency policy knowledge with 2025/2026 updates:
-
-- **5 primary roles:** pre-meeting briefing, live case triage, appeal letter drafting, policy lookup, weekly digests
-- **Agency knowledge base:** HDB, CPF, MOM, MOH, MSF, ICA, IRAS, LTA, MOE, PA — eligibility thresholds, scheme names, appeal processes
-- **MPS appeal letter format:** standard template used for all formal letters to agencies
-- **Behavioural rules:** accuracy-first, strict confidentiality, tone, escalation awareness
-- **Quick-reference routing table:** maps constituent complaints to the correct agency
-
-### `singapore-knowledge-ingestion.md` — Current policy URLs
-
-60+ URLs to feed into the knowledge graph, organised by priority:
-
-| Priority | Agency | URLs |
-|---|---|---|
-| 1 | HDB | Grants, eligibility, BTO/resale process, Fresh Start 2026 |
-| 2 | MSF / ComCare | Crisis/SMTA/PA, Silver Support, SSO locator, COS 2026 |
-| 3 | CPF | Accounts, CPF LIFE, MediSave, 2026 changes |
-| 4 | MOH | CHAS, MediShield Life, MediFund, CareShield Life |
-| 5 | MOM | EP/S Pass/WP/LTVP, TADM, retrenchment |
-| 6 | ICA | PR/citizenship appeals, LTVP/LTVP+ |
-| 7 | IRAS | GST Voucher, income tax |
-| 8 | MOE | FAS, Edusave, DSA, SPED |
-| 9 | LTA | Senior/disability concessions |
-| 10 | CDC/PA | CDC Vouchers 2026, grassroots |
-| + | Portals | Budget 2025, COS 2026, SupportGoWhere, LifeSG, OneService |
-
-### `singapore-historical-policies.md` — 70 years of policy history
-
-9-tier archive giving the agent historical depth so it can explain *why* policies exist, not just what they are:
-
-| Tier | Content |
-|---|---|
-| 1 | Foundational Acts of Parliament (HDA 1959, CPFA 1953, EA 1968, MSHA 2015, ICA 1959 …) |
-| 2 | Decade-by-decade milestones 1950s–2020s with context and ingest URLs |
-| 3 | Hansard / Pair Search queries for parliamentary debates on housing, CPF, ComCare, MediShield |
-| 4 | NLB digitised archives and Singapore Infopedia |
-| 5 | Wikipedia policy summaries (housing, CPF, healthcare, immigration, transport) |
-| 6 | Agency historical pages (HDB, CPF, MOH, MOM, MSF, PA) |
-| 7 | Full Budget archive 2005–2025 |
-| 8 | Committee of Supply debate archives |
-| 9 | Academic research papers (ADB, SMU, UNRISD, NUS) |
-
-### `singapore-auto-update-tasks.md` — Permanent policy currency
-
-10 copy-paste task blocks to set up automated policy monitoring:
-
-| Block | Task name | Schedule | What it does |
-|---|---|---|---|
-| 1 | `daily-policy-watch` | Every morning 7am | Checks 8 agency newsrooms; silent if nothing new |
-| 2 | `weekly-policy-digest` | Every Monday 8am | Structured 5-point digest of all policy changes |
-| 3 | `budget-season-watch` | Feb 1 – Mar 31 daily | Same-day Budget and COS updates |
-| 4 | `parliament-sitting-watch` | Every Tuesday 6pm | PQ replies on housing, CPF, healthcare, employment |
-| 5 | `monthly-policy-refresh` | 1st of every month | Re-ingests all current policy pages |
-| 6 | `cpf-quarterly-rates` | Jan/Apr/Jul/Oct 1 | CPF interest rates + Basic Healthcare Sum |
-| 7 | `urgent-policy-alerts` | Every day 12pm | Singapore Press Centre for major announcements |
-| 8 | `pre-mps-briefing` | Your MPS evening | Full pre-session policy brief |
-| 9 | `annual-policy-calendar` | Key annual dates | CPF rate day, Budget month, COS month, mid-year |
-| 10 | Task management | On demand | `/tasks`, pause, resume, stop |
-
-### `feedback-log.md` — Weekly improvement input
-
-Logs anonymised policy corrections after each MPS session for processing by Hermes GEPA. Format:
+## MPS Night workflow
 
 ```
-/feedback [wrong thing agent said] → [correct answer] | agency: [HDB/CPF/MOH/MSF/MOM/ICA]
+1. Admin opens session → mps_server /sessions/open
+2. Volunteers log in to GTK4 client
+3. For each resident:
+   a. Search / register resident (NRIC stored masked: S****567A)
+   b. Create case (agency, case type, urgency, re-appeal?)
+   c. Enter case notes
+   d. Click Generate Draft → Ollama streams letter in real-time
+   e. Edit draft if needed → Copy to Clipboard
+   f. Paste into MPS case management platform
+   g. Submit for vetting
+4. Vetters review queue → Approve or Return with comment
+5. Volunteer revises if returned → resubmits
+6. Admin closes session when all cases done (can run past midnight)
+7. Next day: MP reviews in MPS platform → approves → platform auto-sends
 ```
-
-No NRIC, no names, no case IDs — anonymised patterns only. Processed weekly by `weekly-skill-update.sh`.
 
 ---
 
-### groups/mps-vetters/ — Vetter team channel
+## What we are deliberately NOT doing
 
-**`CLAUDE.md`** defines a focused, read-only review agent that helps vetters quality-check draft letters before the MP approves them. This agent:
-
-- **Does not draft letters from scratch** — that is the volunteer's role
-- **Runs 5 checks on every draft:** agency name accuracy, scheme/policy accuracy, request clarity, tone, and missing information
-- **Returns a clear verdict:** PASS / NEEDS REVISION / FLAG with line-by-line corrections
-- **Carries 2025/2026 policy quick-reference** for HDB, CPF, MOH, MSF, MOM, and ICA
-- **Escalates immediately** for child abuse, domestic violence, suicidal ideation, criminal matters, or medical emergencies — with the correct hotline number
-
----
-
-## Self-improvement via Hermes GEPA
-
-nanoClaw's knowledge base grows through ingestion. Agent reasoning improves through weekly GEPA cycles in the companion Hermes repo.
-
-### During MPS sessions
-
-Type in the main group chat after spotting an error:
-
-```
-/feedback EHG ceiling cited as $9,000 → correct ceiling is $8,000 for families | agency: HDB
-```
-
-The agent logs an anonymised correction to `groups/main/feedback-log.md`.
-
-### Every Sunday
-
-```bash
-bash weekly-skill-update.sh
-```
-
-The script:
-1. Scans feedback-log.md for NRIC/phone patterns — rejects if found
-2. Prompts manual review before any export
-3. Sends anonymised patterns to Hermes GEPA
-4. Shows generated skill improvements for your review
-5. Prompts you to merge approved changes into CLAUDE.md
-6. Restarts nanoClaw
-7. Archives the week's log
-
-Full workflow: [INTEGRATION.md](./INTEGRATION.md)
+| Skipped | Why |
+|---------|-----|
+| Anthropic API / OneCLI vault | Fully replaced by Ollama on-premises |
+| WhatsApp / Telegram for core workflow | GTK4 native app is faster and safer on old Linux laptops |
+| Browser UI for volunteers | Old laptops struggle; native GTK4 uses ~50–80 MB RAM |
+| Receptionist data entry screen | Volunteers enter directly during the interview |
+| MP using nanoClaw | MP reviews and approves in the MPS platform only |
+| Internet access from server | Air-gapped — all inference is local |
 
 ---
 
-## CRM Bridge — case management integration
+## Component overview
 
-`mcp-crm-server.py` connects the agent to your case records via MCP. Five backends supported:
+### `mps_server/` — FastAPI backend (Python)
 
-| Backend | `CRM_BACKEND` value | Best for |
-|---|---|---|
-| **SQLite** | `sqlite` | Default — no infrastructure, works immediately |
-| **Google Sheets** | `google_sheets` | Shared spreadsheet accessible by MP's office team |
-| **REST API** | `rest_api` | Existing CRM system with a JSON API |
-| **SharePoint** | `sharepoint` | Organisations already on Microsoft 365 |
-| **CSV** | `csv` | Read-only import of legacy case exports |
+REST + WebSocket API. Runs on the central server, LAN-only (127.0.0.1:8000).
 
-### MCP tools available to the agent
+| Module | Purpose |
+|--------|---------|
+| `database.py` | SQLAlchemy models: User, Session, Resident, Case, Letter, FeedbackEntry, AuditLog |
+| `auth.py` | JWT tokens, bcrypt passwords, RBAC (volunteer / vetter / admin), lockout after 5 failures |
+| `main.py` | FastAPI app entry point, auto-creates DB tables, seeds default admin |
+| `services/audit.py` | Append-only SHA-256 hash-chained audit log — tamper-evident |
+| `services/ollama_client.py` | LLM queue (max 3 concurrent), streaming via Ollama, LETTER / REAPPEAL / QA system prompts |
+| `routers/auth_router.py` | POST /auth/login (OAuth2 form), /logout, /register |
+| `routers/sessions_router.py` | Open / close MPS session lifecycle |
+| `routers/residents_router.py` | Search + create residents (full NRIC never stored) |
+| `routers/cases_router.py` | Case CRUD, volunteer submit, vetter-pass, vetter-return |
+| `routers/letters_router.py` | WebSocket /letters/ws/draft (streaming), /letters/ws/qa, save, freeze |
+| `routers/feedback_router.py` | Log corrections → vetter validates → Hermes GEPA receives approved only |
 
-| Tool | What the agent can do |
-|---|---|
-| `lookup_constituent` | Pull full profile + all past cases + letters before an MP meeting |
-| `create_case` | Log a new case with issue type, agency, urgency, and volunteer name |
-| `attach_letter` | Store the full text of a drafted appeal letter against its case |
-| `update_case_status` | Mark a case as replied / resolved / escalated when agency responds |
-| `get_pending_cases` | List all open cases with no reply after N days (default 21) |
-| `get_todays_queue` | Show tonight's MPS case list sorted by urgency |
+### `mps_client/` — GTK4 native desktop app (Python + PyGObject)
 
-### Wire into NanoClaw
+Runs on each volunteer and vetter laptop. ~50–80 MB RAM. Works on old Linux hardware.
 
-```yaml
-# nanoclaw.yaml
-mcp_servers:
-  crm-bridge:
-    type: stdio
-    command: python3
-    args: [~/nanoclaw/mcp-crm-server.py]
-    env:
-      CRM_BACKEND: sqlite
-      CRM_DATA_DIR: ~/nanoclaw/crm-data
+| File | Purpose |
+|------|---------|
+| `api_client.py` | Async REST + WebSocket client (httpx + websockets) |
+| `async_bridge.py` | Background asyncio loop, GTK-thread-safe callbacks via GLib.idle_add |
+| `login_window.py` | Adwaita login screen with lockout messaging |
+| `main_window.py` | Split-pane main: case list (left) + letter view or vetter panel (right). Role-based. |
+| `widgets/case_form.py` | New Case dialog — resident search/register, agency, urgency, re-appeal toggle |
+| `widgets/letter_view.py` | **Core tool** — notes entry, Generate, streaming draft, edit, **Copy to Clipboard**, submit |
+| `widgets/vetter_view.py` | Vetter queue, letter read-only view, Approve / Return-with-comment |
 
-groups:
-  main:
-    role: owner
-    mcp_servers: [crm-bridge]
-  mps-volunteers:
-    role: member
-    mcp_servers: [crm-bridge]
-  mps-vetters:
-    role: member
-    claude_md: groups/mps-vetters/CLAUDE.md
-    mcp_servers: []          # No CRM access — policy lookup only
+### Data model
+
 ```
+Resident (permanent across sessions)
+  └── Cases (one per session visit)
+        └── Letters (versioned drafts)
+              └── FeedbackEntry (vetter-validated corrections → Hermes GEPA)
+
+Session (one per MPS night)
+  └── Cases
+
+AuditLog (append-only, SHA-256 hash chain)
+```
+
+**NRIC handling:** masked at point of entry (`S****567A`). Full NRIC never stored, never logged.
+
+---
+
+## Roles
+
+| Role | What they can do |
+|------|-----------------|
+| `volunteer` | Create cases, generate drafts, edit, copy, submit for vetting |
+| `vetter` | Review queue, approve letters, return with comment, log feedback |
+| `admin` | All volunteer + vetter actions, open/close sessions, register users |
+| *(MP)* | Reviews and approves in MPS platform — does not use nanoClaw |
 
 ---
 
 ## Security
 
-Constituent data is highly sensitive. Every security control is non-negotiable.
+All security controls are non-negotiable. No constituent data leaves the LAN.
 
-| Control | What it does |
-|---|---|
-| **API key isolation** | OneCLI Agent Vault proxies all Anthropic API calls — the container never holds a raw key |
-| **Sender allowlist** | Only the MP's verified number can trigger the agent; all others are silently dropped |
-| **Container isolation** | Each channel group runs in its own Docker container with its own filesystem and Claude session |
-| **Mount allowlist** | Containers can only access explicitly permitted directories — `.ssh`, `.aws`, credentials are blocked |
-| **Local-only voice** | whisper.cpp transcribes voice notes on-device; audio bytes never leave the machine |
-| **Local-only embeddings** | nomic-embed-text runs in Ollama locally; no document content sent to cloud embedding APIs |
-| **Web UI binding** | Web UI binds to `127.0.0.1` only — not accessible from the network |
-| **Group name validation** | Group folder names strictly validated (alphanumeric, hyphens, underscores only) |
-| **Hermes boundary** | Constituent data never crosses to the Hermes skill engine — only anonymised patterns |
+| Control | Implementation |
+|---------|---------------|
+| **No cloud AI** | Ollama runs on-premises; llama3.2:3b / llama3.1:8b; no API key |
+| **NRIC masking** | Full NRIC never stored — S****567A format enforced at API layer |
+| **JWT auth** | 60-minute tokens, bcrypt passwords, account lockout after 5 failures |
+| **RBAC** | Volunteers cannot access vetter queue; vetters cannot open sessions |
+| **Append-only audit log** | SHA-256 hash chain — every action logged, tampering detectable |
+| **LAN-only binding** | Server binds to 127.0.0.1 — not reachable from internet |
+| **Feedback isolation** | Only vetter-validated, anonymised corrections reach Hermes GEPA |
+| **No full-NRIC storage** | Validated at `POST /residents/` — API rejects unmasked NRICs |
+| **Frozen letters** | Once vetted, letters are frozen — no further edits |
+| **Docker isolation** | WhatsApp/Telegram groups (if used) still get per-group containers |
 
-> **On prompt injection:** This is an acknowledged open problem. The sender allowlist is the primary defence. Do not connect the agent to systems whose compromise would be severe.
-
----
-
-## Prerequisites
-
-Run in your **WSL2 Ubuntu** terminal:
-
-```bash
-# 1. Confirm WSL2
-wsl.exe --list --verbose   # VERSION must show 2 for Ubuntu
-
-# 2. Build tools
-sudo apt-get update && sudo apt-get install -y build-essential python3 git curl
-
-# 3. Docker reachable from WSL
-docker ps
-# If not: Docker Desktop → Settings → Resources → WSL Integration → enable Ubuntu
-
-# 4. Clone into Linux filesystem (not /mnt/c/ — 10-100x slower)
-cd ~
-git clone https://github.com/J-Dheeraj/MPS-AI-Agent-_nanoClaw nanoclaw
-cd nanoclaw
-
-# 5. Anthropic API key ready (sk-ant-...)
-# https://console.anthropic.com/settings/api-keys — add $10–20 credit
-```
+> **On prompt injection:** Acknowledged open problem. The sender allowlist and RBAC reduce blast radius. Do not connect the agent to systems whose compromise would be severe.
 
 ---
 
 ## Installation
 
+### Server (central machine)
+
 ```bash
-cd ~/nanoclaw
-bash nanoclaw.sh
+# Prerequisites
+sudo apt-get install -y python3 python3-pip
+
+# Clone
+cd ~
+git clone https://github.com/J-Dheeraj/MPS-AI-Agent-_nanoClaw.git nanoclaw
+cd nanoclaw
+
+# Install Python dependencies
+pip3 install -r mps_server/requirements.txt --user
+
+# Run hardening (generates SECRET_KEY, sets file permissions)
+bash harden.sh
+
+# Install and start Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull llama3.2:3b          # fast, works on most hardware
+# ollama pull llama3.1:8b        # better quality, needs 8GB+ RAM
+ollama pull nomic-embed-text
+
+# Start the server
+bash start-server.sh
+# OR as systemd service (recommended):
+systemctl --user start mps-server
+systemctl --user enable mps-server
 ```
 
-The installer:
+### Create user accounts
 
-1. Installs Node 22 (nvm) and pnpm 10
-2. Installs **OneCLI Agent Vault** and stores your API key — the agent never sees it directly
-3. Builds the Docker agent container image
-4. Creates `~/.config/nanoclaw/mount-allowlist.json` and `sender-allowlist.json`
-5. Registers a systemd user service
+The server starts with a default `admin / admin123` account. **Change it immediately.**
+
+Open `http://127.0.0.1:8000/docs` (Swagger UI) and use `POST /auth/register`:
+
+```bash
+# Example: create a volunteer account
+curl -X POST http://127.0.0.1:8000/auth/register \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"ali","password":"STRONG_PW","role":"volunteer","full_name":"Ali Bin Ahmad"}'
+```
+
+Roles: `volunteer`, `vetter`, `admin`.
+
+### Open a session (admin, on MPS night)
+
+```bash
+curl -X POST http://127.0.0.1:8000/sessions/open \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"date":"2026-05-24"}'
+```
+
+### Volunteer / Vetter laptops
+
+```bash
+# Install GTK4 (once per laptop)
+sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1
+pip3 install httpx websockets --user
+
+# Point client at the server IP
+# Edit mps_client/api_client.py:
+#   SERVER    = "http://192.168.X.X:8000"
+#   WS_SERVER = "ws://192.168.X.X:8000"
+
+# Launch
+cd ~/nanoclaw
+bash start-client.sh
+```
 
 ---
 
-## First-time setup
+## Connecting to Hermes GEPA
 
-### 1. Customise the agent identity
+After each MPS session, vetters validate corrections in the GTK4 client (`Feedback` tab).
 
-Edit `groups/main/CLAUDE.md` — replace `[MP NAME]` and `[CONSTITUENCY]` with the MP's actual name and constituency.
+Every Sunday, Hermes GEPA reads approved corrections from `/feedback/approved` and improves the skill files. No constituent data is ever sent.
 
-### 2. Set your sender allowlist
-
-```json
-{
-  "defaultMode": "drop",
-  "groups": {
-    "main": {
-      "mode": "drop",
-      "allowedSenders": ["6591234567@s.whatsapp.net"]
-    }
-  }
-}
+```yaml
+# profiles/mps-volunteers/hermes-config.yaml
+llm:
+  provider: ollama
+  model: llama3.2:3b
+gepa:
+  schedule: "0 2 * * 0"    # Sunday 2am
+  feedback_endpoint: http://127.0.0.1:8000/feedback/approved
+  data_isolation: strict    # never stores raw feedback — extracts policy corrections only
 ```
 
-Replace `6591234567` with the MP's number in international format.
-
-### 3. Pair your channel
-
-```
-/add-whatsapp    → scan QR code in WhatsApp → Settings → Linked Devices
-/add-telegram    → create bot via @BotFather, paste token
-```
-
-Web UI: available immediately at `http://localhost:3080`.
-
-### 4. Set up local AI
-
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull nomic-embed-text
-# In web UI: /add-ollama
-```
-
-### 5. Build the policy knowledge base
-
-Follow `groups/main/singapore-knowledge-ingestion.md` — ingest Priority 1 → 10.
-
-### 6. Set up auto-update tasks
-
-Send each of the 10 task blocks from `singapore-auto-update-tasks.md` to the agent.
-
-### 7. Set up Hermes GEPA (companion repo)
-
-```bash
-cd ~
-git clone https://github.com/J-Dheeraj/MPS-AI-Agent-Hermes mps-hermes-agent
-mkdir -p ~/mps-hermes-agent/skills/auto
-chmod +x ~/nanoclaw/weekly-skill-update.sh
-```
-
-See [INTEGRATION.md](./INTEGRATION.md) for full setup.
+Full Hermes setup: [MPS-AI-Agent-Hermes](https://github.com/J-Dheeraj/MPS-AI-Agent-Hermes)
 
 ---
 
 ## Security verification checklist
 
+Run before every MPS night:
+
 ```bash
-# 1. No API keys in any container
-docker inspect $(docker ps -q) | grep -i "sk-ant\|anthropic_api\|api_key"
+# 1. No API keys in any process
+grep -r "sk-ant" ~/nanoclaw/ 2>/dev/null
 # Expected: no output
 
-# 2. Sender allowlist active — send from a number not in your allowlist
-# Expected: no response, nothing stored
+# 2. Ollama is local only
+curl http://localhost:11434/api/tags | grep llama
+# Expected: model listed — no external calls
 
-# 3. Mount allowlist enforced
-docker run --rm -v ~/.ssh:/test alpine ls /test
-# Expected: permission error
+# 3. Server is LAN-only
+ss -tlnp | grep 8000
+# Expected: 127.0.0.1:8000 (not 0.0.0.0)
 
-# 4. Voice stays on-device
-docker logs $(docker ps -q --filter name=whatsapp) --tail 20
-# Expected: "whisper transcription complete" — no external audio API calls
+# 4. DB permissions
+ls -la mps_server/mps.db
+# Expected: -rw------- (600)
 
-# 5. Embeddings local only
-ollama list | grep nomic-embed-text
-# Expected: model listed; no outbound calls to embedding APIs during ingestion
+# 5. SECRET_KEY changed from default
+grep "CHANGE_THIS" mps_server/.env
+# Expected: no output
 
-# 6. Web UI localhost only
-# From another machine: curl http://YOUR_PC_IP:3080
-# Expected: connection refused
+# 6. Audit log is append-only (spot check)
+curl http://127.0.0.1:8000/audit -H "Authorization: Bearer <admin_token>" | head -5
+# Expected: hash chain entries
 
-# 7. Hermes boundary — check feedback-log.md before each Sunday export
-grep -E '[STFG][0-9]{7}[A-Z]' groups/main/feedback-log.md
-# Expected: no output (no NRICs)
+# 7. No full NRIC in DB
+sqlite3 mps_server/mps.db "SELECT nric_masked FROM residents;" | grep -v '\*'
+# Expected: no output (all entries are masked)
 ```
 
 ---
@@ -445,80 +288,87 @@ grep -E '[STFG][0-9]{7}[A-Z]' groups/main/feedback-log.md
 
 ```
 nanoclaw/
+├── mps_server/                    ← FastAPI backend (NEW)
+│   ├── main.py                    # App entry point
+│   ├── database.py                # SQLAlchemy models
+│   ├── auth.py                    # JWT + RBAC
+│   ├── requirements.txt
+│   ├── .env                       # Secrets (not committed)
+│   ├── services/
+│   │   ├── audit.py               # Hash-chained audit log
+│   │   └── ollama_client.py       # LLM queue + streaming
+│   └── routers/
+│       ├── auth_router.py
+│       ├── sessions_router.py
+│       ├── residents_router.py
+│       ├── cases_router.py
+│       ├── letters_router.py
+│       └── feedback_router.py
+├── mps_client/                    ← GTK4 native desktop app (NEW)
+│   ├── __main__.py                # Entry point (python3 -m mps_client)
+│   ├── api_client.py              # Async REST + WebSocket client
+│   ├── async_bridge.py            # asyncio ↔ GTK thread bridge
+│   ├── login_window.py            # Login screen
+│   ├── main_window.py             # Main split-pane window
+│   └── widgets/
+│       ├── case_form.py           # New Case dialog
+│       ├── letter_view.py         # Streaming draft + Copy button
+│       └── vetter_view.py         # Vetter review panel
 ├── groups/
-│   ├── main/
-│   │   ├── CLAUDE.md                         ← MP agent identity, roles, agency knowledge
-│   │   ├── singapore-knowledge-ingestion.md  ← 60+ current policy URLs, priority 1–10
-│   │   ├── singapore-historical-policies.md  ← 70-year policy history, 9 tiers
-│   │   ├── singapore-auto-update-tasks.md    ← 10 scheduled monitoring task blocks
-│   │   └── feedback-log.md                   ← Anonymised GEPA correction patterns (weekly)
+│   ├── main/                      # MP private channel (WhatsApp/Telegram)
+│   │   ├── CLAUDE.md
+│   │   ├── singapore-knowledge-ingestion.md
+│   │   ├── singapore-historical-policies.md
+│   │   └── singapore-auto-update-tasks.md
+│   ├── mps-volunteers/            # NEW — Hermes GEPA config + skill stubs
+│   │   ├── hermes-config.yaml
+│   │   └── skills/
+│   │       ├── HDB.md
+│   │       ├── CPF.md
+│   │       ├── MSF.md
+│   │       ├── MOH.md
+│   │       ├── MOM.md
+│   │       ├── ICA.md
+│   │       └── letter-format.md
 │   └── mps-vetters/
-│       └── CLAUDE.md                         ← Vetter: 5-check review, PASS/FAIL verdicts
-├── INTEGRATION.md                            ← Combined nanoClaw + Hermes workflow
-├── weekly-skill-update.sh                    ← Weekly GEPA pipeline (export → evolve → apply)
-├── mps-workflow-integration.md               ← 3-stage MPS workflow, platform comparison
-├── mcp-crm-server.py                         ← CRM Bridge MCP server (5 backends)
-├── nanoclaw-crm-wiring.yaml                  ← Copy-paste wiring guide (4 blocks)
-├── requirements-crm.txt                      ← Python deps for CRM bridge
-├── nanoclaw.yaml                             ← Full config: 3 groups, MCP wired
-├── src/
-│   ├── index.ts                   # Host process orchestrator
-│   ├── router/index.ts            # Message routing + sender validation
-│   ├── security/
-│   │   ├── groupNames.ts          # Strict name validation
-│   │   ├── senderAllowlist.ts     # drop / trigger enforcement
-│   │   └── mountAllowlist.ts      # Mount path enforcement
-│   ├── channels/
-│   │   ├── whatsapp.ts            # Baileys connector
-│   │   ├── telegram.ts            # Telegram bot
-│   │   ├── webui.ts               # Express on 127.0.0.1:3080
-│   │   └── cli.ts                 # Terminal interface
-│   ├── container/runner.ts        # Docker spawner (no API keys passed)
-│   ├── delivery/index.ts          # outbound.db poller
-│   └── scheduler/index.ts         # Cron task runner
-├── container/
-│   ├── Dockerfile                 # Bun/Alpine agent image
-│   ├── build.sh
-│   └── agent/
-│       ├── index.ts               # Claude agentic loop
-│       ├── mnemon/index.ts        # SQLite + FTS5 knowledge graph
-│       └── tools/
-│           ├── ingest.ts          # URL / document ingestion
-│           └── search.ts          # Semantic search
-├── public/index.html              # Web chat UI
-├── nanoclaw.sh                    # Installer
-├── start-nanoclaw.sh              # Manual start (no systemd)
-└── .env.example
+│       └── CLAUDE.md
+├── start-server.sh                ← Launch FastAPI server
+├── start-client.sh                ← Launch GTK4 client
+├── harden.sh                      ← Generate secrets, set permissions
+├── MPS_DEPLOY.md                  ← Full deployment guide
+├── INTEGRATION.md                 ← nanoClaw + Hermes combined workflow
+├── mcp-crm-server.py              ← CRM Bridge (optional, for WhatsApp/Telegram)
+├── weekly-skill-update.sh         ← Hermes GEPA weekly pipeline
+├── src/                           ← NanoClaw host process (WhatsApp/Telegram channels)
+├── container/                     ← Docker agent image
+└── nanoclaw.sh                    ← Original installer
 ```
 
 ---
 
-## Important caveats
+## Important notes
 
-1. **Constituent confidentiality is paramount.** The sender allowlist must be configured before pairing any channel. Default mode is `drop` — all unknown senders are silently ignored and not stored.
+1. **No cloud AI.** Ollama runs entirely on-premises. `llama3.2:3b` works on laptops with 4GB RAM. Use `llama3.1:8b` for better letter quality if the server has 8GB+ RAM.
 
-2. **Hermes boundary.** Only anonymised correction patterns leave nanoClaw for the Hermes GEPA engine. The `weekly-skill-update.sh` script includes a PII scan and requires manual confirmation before any export.
+2. **Sessions run until all cases are done.** No fixed end time. Common to run past midnight.
 
-3. **Policy accuracy.** Singapore policies change at Budget (February) and COS (March). The auto-update tasks keep the knowledge base current, but verify with the agency before sending a letter under the MP's name.
+3. **MP does not use this system.** The MP reviews and approves letters in the MPS platform the next day. MPS platform auto-sends.
 
-4. **Prompt injection is not solved.** Rate limits and the sender allowlist reduce the blast radius but do not eliminate the risk. Do not connect the agent to external systems whose compromise would be severe.
+4. **Copy-paste is intentional.** Volunteers generate the draft in the GTK4 client, copy it, and paste it into the MPS platform. This avoids any API integration between systems and keeps the workflow simple.
 
-5. **WhatsApp ToS.** Baileys uses the WhatsApp Web protocol, which is against WhatsApp's ToS for automated use. This is for personal/professional use only.
+5. **Old laptops are fine.** GTK4 + Python uses ~50–80 MB RAM. No browser engine. Tested on Ubuntu 22.04.
 
-6. **API costs.** Monitor usage at [console.anthropic.com/usage](https://console.anthropic.com/usage). Set a spending limit before going live.
+6. **Policy accuracy.** Always verify policy thresholds with the agency before sending a letter under the MP's name. Singapore policies change at Budget (February) and COS (March).
 
 ---
 
 ## References
 
 - [MPS-AI-Agent-Hermes](https://github.com/J-Dheeraj/MPS-AI-Agent-Hermes) — companion GEPA skill engine
-- [INTEGRATION.md](./INTEGRATION.md) — combined system workflow and security boundary
-- [Anthropic Console](https://console.anthropic.com)
-- [OneCLI Agent Vault](https://github.com/onecli/onecli)
-- [NanoClaw platform](https://github.com/nanocoai/nanoclaw)
-- [HDB](https://www.hdb.gov.sg) · [CPF](https://www.cpf.gov.sg) · [MOM](https://www.mom.gov.sg) · [MOH](https://www.moh.gov.sg) · [MSF](https://www.msf.gov.sg) · [ICA](https://www.ica.gov.sg) · [IRAS](https://www.iras.gov.sg) · [LTA](https://www.lta.gov.sg) · [MOE](https://www.moe.gov.sg)
-- [Singapore Budget Archive](https://singaporebudget.gov.sg)
-- [Singapore Parliament Hansard](https://sprs.parl.gov.sg/search/)
+- [INTEGRATION.md](./INTEGRATION.md) — combined system workflow
+- [MPS_DEPLOY.md](./MPS_DEPLOY.md) — full deployment guide
+- [Ollama](https://ollama.com) — local LLM inference
+- [HDB](https://www.hdb.gov.sg) · [CPF](https://www.cpf.gov.sg) · [MOM](https://www.mom.gov.sg) · [MOH](https://www.moh.gov.sg) · [MSF](https://www.msf.gov.sg) · [ICA](https://www.ica.gov.sg)
 - [SupportGoWhere](https://supportgowhere.life.gov.sg)
 
 ---
