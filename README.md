@@ -2,7 +2,7 @@
 
 A self-hosted AI agent purpose-built for Singapore Members of Parliament conducting **Meet-the-People Sessions (MPS)** and constituency casework.
 
-Volunteers use a **native GTK4 desktop app** to draft formal appeal letters with AI assistance. Vetters review drafts in the same app. The MP approves in the MPS case management platform the next day. All AI inference runs fully **on-premises via Ollama** — no Anthropic API key, no cloud calls, no constituent data ever leaves the LAN.
+Volunteers use a **native GTK4 desktop app** to draft formal appeal letters with AI assistance. Vetters edit the draft letter directly in the same app, then submit it to the MP for final approval. The MP reviews and approves in the MPS case management platform the next day. All AI inference runs fully **on-premises via Ollama** — no Anthropic API key, no cloud calls, no constituent data ever leaves the LAN.
 
 > **Companion repo:** [MPS-AI-Agent-Hermes](https://github.com/J-Dheeraj/MPS-AI-Agent-Hermes) runs offline weekly to improve agent skill files via GEPA (Generalised Experience-driven Policy Adaptation, ICLR 2026).
 
@@ -43,10 +43,11 @@ MPS platform auto-sends approved letters to agencies.
    b. Create case (agency, case type, urgency, re-appeal?)
    c. Enter case notes
    d. Click Generate Draft → Ollama streams letter in real-time
-   e. Edit draft if needed → Copy to Clipboard
-   f. Paste into MPS case management platform
-   g. Submit for vetting
-4. Vetters review queue → Approve or Return with comment
+   e. Edit draft if needed → Copy to Clipboard (volunteer can paste into MPS platform as working copy)
+   f. Submit for vetting
+4. Vetters open case from queue → edit draft letter directly → click Submit to MP
+   (saves final_content, letter frozen, case → pending_mp)
+   OR return to volunteer with a comment if more information is needed
 5. Volunteer revises if returned → resubmits
 6. Admin closes session when all cases done (can run past midnight)
 7. Next day: MP reviews in MPS platform → approves → platform auto-sends
@@ -83,7 +84,7 @@ REST + WebSocket API. Runs on the central server, LAN-only (127.0.0.1:8000).
 | `routers/auth_router.py` | POST /auth/login (OAuth2 form), /logout, /register |
 | `routers/sessions_router.py` | Open / close MPS session lifecycle |
 | `routers/residents_router.py` | Search + create residents (full NRIC never stored) |
-| `routers/cases_router.py` | Case CRUD, volunteer submit, vetter-pass, vetter-return |
+| `routers/cases_router.py` | Case CRUD, volunteer submit, vetter-submit (saves final, freezes), vetter-return |
 | `routers/letters_router.py` | WebSocket /letters/ws/draft (streaming), /letters/ws/qa, save, freeze |
 | `routers/feedback_router.py` | Log corrections → vetter validates → Hermes GEPA receives approved only |
 
@@ -98,10 +99,17 @@ Runs on each volunteer and vetter laptop. ~50–80 MB RAM. Works on old Linux ha
 | `login_window.py` | Adwaita login screen with lockout messaging |
 | `main_window.py` | Split-pane main: case list (left) + letter view or vetter panel (right). Role-based. |
 | `widgets/case_form.py` | New Case dialog — resident search/register, agency, urgency, re-appeal toggle |
-| `widgets/letter_view.py` | **Core tool** — notes entry, Generate, streaming draft, edit, **Copy to Clipboard**, submit |
-| `widgets/vetter_view.py` | Vetter queue, letter read-only view, Approve / Return-with-comment |
+| `widgets/letter_view.py` | **Core volunteer tool** — notes entry, Generate, streaming draft, edit, **Copy to Clipboard**, submit |
+| `widgets/vetter_view.py` | Vetter queue, **fully editable** draft letter, **Submit to MP** (primary) / Return to volunteer (secondary) |
 
 ### Data model
+
+**Case status flow:**
+```
+new → assigned → drafted → pending_mp → approved → sent
+                    │
+                    └── returned → assigned  (volunteer revises, resubmits)
+```
 
 ```
 Resident (permanent across sessions)
@@ -124,7 +132,7 @@ AuditLog (append-only, SHA-256 hash chain)
 | Role | What they can do |
 |------|-----------------|
 | `volunteer` | Create cases, generate drafts, edit, copy, submit for vetting |
-| `vetter` | Review queue, approve letters, return with comment, log feedback |
+| `vetter` | Review queue, **edit draft letter directly**, submit to MP, return to volunteer with comment, validate feedback |
 | `admin` | All volunteer + vetter actions, open/close sessions, register users |
 | *(MP)* | Reviews and approves in MPS platform — does not use nanoClaw |
 
@@ -144,7 +152,7 @@ All security controls are non-negotiable. No constituent data leaves the LAN.
 | **LAN-only binding** | Server binds to 127.0.0.1 — not reachable from internet |
 | **Feedback isolation** | Only vetter-validated, anonymised corrections reach Hermes GEPA |
 | **No full-NRIC storage** | Validated at `POST /residents/` — API rejects unmasked NRICs |
-| **Frozen letters** | Once vetted, letters are frozen — no further edits |
+| **Frozen letters** | After vetter clicks Submit to MP (`is_frozen=True`, `final_content` saved) — letter cannot be edited; vetter's text is what the MP sees |
 | **Docker isolation** | WhatsApp/Telegram groups (if used) still get per-group containers |
 
 > **On prompt injection:** Acknowledged open problem. The sender allowlist and RBAC reduce blast radius. Do not connect the agent to systems whose compromise would be severe.
@@ -280,6 +288,9 @@ curl http://127.0.0.1:8000/audit -H "Authorization: Bearer <admin_token>" | head
 # 7. No full NRIC in DB
 sqlite3 mps_server/mps.db "SELECT nric_masked FROM residents;" | grep -v '\*'
 # Expected: no output (all entries are masked)
+
+# 8. Frozen letters cannot be edited
+# After a vetter submits, attempt PUT /letters/{id} — should return 403 Forbidden
 ```
 
 ---
@@ -288,7 +299,7 @@ sqlite3 mps_server/mps.db "SELECT nric_masked FROM residents;" | grep -v '\*'
 
 ```
 nanoclaw/
-├── mps_server/                    ← FastAPI backend (NEW)
+├── mps_server/                    ← FastAPI backend
 │   ├── main.py                    # App entry point
 │   ├── database.py                # SQLAlchemy models
 │   ├── auth.py                    # JWT + RBAC
@@ -301,10 +312,10 @@ nanoclaw/
 │       ├── auth_router.py
 │       ├── sessions_router.py
 │       ├── residents_router.py
-│       ├── cases_router.py
+│       ├── cases_router.py        # vetter-submit: saves final_content, freezes letter
 │       ├── letters_router.py
 │       └── feedback_router.py
-├── mps_client/                    ← GTK4 native desktop app (NEW)
+├── mps_client/                    ← GTK4 native desktop app
 │   ├── __main__.py                # Entry point (python3 -m mps_client)
 │   ├── api_client.py              # Async REST + WebSocket client
 │   ├── async_bridge.py            # asyncio ↔ GTK thread bridge
@@ -312,15 +323,15 @@ nanoclaw/
 │   ├── main_window.py             # Main split-pane window
 │   └── widgets/
 │       ├── case_form.py           # New Case dialog
-│       ├── letter_view.py         # Streaming draft + Copy button
-│       └── vetter_view.py         # Vetter review panel
+│       ├── letter_view.py         # Streaming draft + Copy button (volunteers)
+│       └── vetter_view.py         # Editable draft + Submit to MP (vetters)
 ├── groups/
 │   ├── main/                      # MP private channel (WhatsApp/Telegram)
 │   │   ├── CLAUDE.md
 │   │   ├── singapore-knowledge-ingestion.md
 │   │   ├── singapore-historical-policies.md
 │   │   └── singapore-auto-update-tasks.md
-│   ├── mps-volunteers/            # NEW — Hermes GEPA config + skill stubs
+│   ├── mps-volunteers/            # Hermes GEPA config + skill stubs
 │   │   ├── hermes-config.yaml
 │   │   └── skills/
 │   │       ├── HDB.md
@@ -354,7 +365,7 @@ nanoclaw/
 
 3. **MP does not use this system.** The MP reviews and approves letters in the MPS platform the next day. MPS platform auto-sends.
 
-4. **Copy-paste is intentional.** Volunteers generate the draft in the GTK4 client, copy it, and paste it into the MPS platform. This avoids any API integration between systems and keeps the workflow simple.
+4. **Vetter owns the final text.** Volunteers generate the AI draft and submit it for vetting. The vetter edits the letter directly in the GTK4 client and clicks **Submit to MP** — this saves `final_content`, freezes the letter (`is_frozen=True`), and marks the case `pending_mp`. The MP reviews the vetter's final text in the MPS platform the next day.
 
 5. **Old laptops are fine.** GTK4 + Python uses ~50–80 MB RAM. No browser engine. Tested on Ubuntu 22.04.
 
